@@ -2,7 +2,10 @@
  * Staff repository — admin users with RBAC roles.
  * See backend.md §3.2 (staff, roles) and §6.9 (admin staff management).
  */
-const db = require('../db/knex');
+const { Staff, Role } = require('../db/models');
+const { QueryTypes } = require('sequelize');
+const sequelize = require('../db/sequelize');
+
 const STAFF_TABLE = 'staff';
 const ROLES_TABLE = 'roles';
 
@@ -11,71 +14,88 @@ module.exports = {
   ROLES_TABLE,
 
   async findRoleByName(name) {
-    return db(ROLES_TABLE).select('*').where({ name }).first();
+    return Role.findOne({ where: { name }, raw: true });
   },
 
   async listRoles() {
-    return db(ROLES_TABLE).select('*').orderBy('id', 'asc');
+    return Role.findAll({ order: [['id', 'ASC']], raw: true });
   },
 
   async findById(id) {
-    return db(STAFF_TABLE).select('*').where({ id }).first();
+    return Staff.findByPk(id, { raw: true });
   },
 
   async findByEmail(email) {
-    return db(STAFF_TABLE).select('*').where({ email: email.toLowerCase() }).first();
+    return Staff.findOne({ where: { email: email.toLowerCase() }, raw: true });
   },
 
   async findByIdWithRole(id) {
-    return db(STAFF_TABLE)
-      .select('staff.*', 'roles.name as role_name')
-      .join('roles', 'roles.id', '=', 'staff.role_id')
-      .where('staff.id', id)
-      .first();
+    const rows = await sequelize.query(
+      `SELECT staff.*, roles.name AS role_name
+       FROM staff
+       JOIN roles ON roles.id = staff.role_id
+       WHERE staff.id = :id
+       LIMIT 1`,
+      { replacements: { id }, type: QueryTypes.SELECT },
+    );
+    return rows[0] || null;
   },
 
   async create(data) {
-    const [id] = await db(STAFF_TABLE).insert(data);
-    return id;
+    const row = await Staff.create(data);
+    return row.id;
   },
 
   async update(id, patch) {
-    const affected = await db(STAFF_TABLE).where({ id }).update(patch);
+    const [affected] = await Staff.update(patch, { where: { id } });
     return affected > 0;
   },
 
   async touchLastLogin(id) {
-    return db(STAFF_TABLE).where({ id }).update({ last_login_at: new Date() });
+    return Staff.update({ last_login_at: new Date() }, { where: { id } });
   },
 
   async list({ page = 1, pageSize = 50, isActive } = {}) {
-    const query = db(STAFF_TABLE)
-      .select(
-        'staff.id',
-        'staff.full_name as fullName',
-        'staff.email',
-        'staff.role_id as roleId',
-        'roles.name as roleName',
-        'staff.preferred_language as preferredLanguage',
-        'staff.is_active as isActive',
-        'staff.last_login_at as lastLoginAt',
-        'staff.created_at as createdAt',
-      )
-      .join('roles', 'roles.id', '=', 'staff.role_id');
+    const where = {};
+    if (isActive !== undefined) where.is_active = isActive;
 
-    if (isActive !== undefined) query.where('staff.is_active', isActive);
+    const { rows, count } = await Staff.findAndCountAll({
+      attributes: [
+        'id',
+        'full_name',
+        'email',
+        'role_id',
+        'preferred_language',
+        'is_active',
+        'last_login_at',
+        'created_at',
+      ],
+      include: [{ model: Role, as: 'role', attributes: ['name'] }],
+      where,
+      order: [['created_at', 'DESC']],
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+      raw: true,
+      nest: true,
+    });
 
-    const total = await query.clone().count('* as count').first();
-    const rows = await query
-      .clone()
-      .orderBy('staff.created_at', 'desc')
-      .limit(pageSize)
-      .offset((page - 1) * pageSize);
-    return { rows, total: Number(total?.count || 0) };
+    // Flatten the nested role.name into roleName for backward compat with the old Knex shape.
+    const flatRows = rows.map((r) => ({
+      id: r.id,
+      fullName: r.full_name,
+      email: r.email,
+      roleId: r.role_id,
+      roleName: r.role?.name,
+      preferredLanguage: r.preferred_language,
+      isActive: r.is_active,
+      lastLoginAt: r.last_login_at,
+      createdAt: r.created_at,
+    }));
+
+    return { rows: flatRows, total: count };
   },
 
   async countActive() {
-    const row = await db(STAFF_TABLE).where({ is_active: true }).count('* as count').first();
-    return Number(row?.count || 0);
+    return Staff.count({ where: { is_active: true } });
   },
 };

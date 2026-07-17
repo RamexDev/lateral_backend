@@ -3,7 +3,7 @@
  */
 const request = require('supertest');
 const { app, registerUser, addInterest } = require('./helpers');
-const db = require('../src/db/knex');
+const db = require('./db');
 
 describe('Profile (§6.5) — /me endpoints', () => {
   describe('GET /api/v1/me', () => {

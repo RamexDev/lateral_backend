@@ -2,99 +2,144 @@
  * User repository — CRUD over `users`.
  * See backend.md §3.2 (users), §6.5 (profile), §6.9 (admin user management).
  */
-const db = require('../db/knex');
+const { User, Bank, Location, TransferInterest, Purchase } = require('../db/models');
+const sequelize = require('../db/sequelize');
+const { Op, QueryTypes, literal } = require('sequelize');
 const TABLE = 'users';
 
 module.exports = {
   TABLE,
 
   async findById(id) {
-    return db(TABLE).select('*').where({ id }).first();
+    return User.findByPk(id, { raw: true });
   },
 
   async findByTelegramId(telegramId) {
-    return db(TABLE).select('*').where({ telegram_id: telegramId }).first();
+    return User.findOne({ where: { telegram_id: telegramId }, raw: true });
   },
 
   async findByPhoneAndBank(phone, bankId) {
-    return db(TABLE).select('*').where({ phone_number: phone, bank_id: bankId }).first();
+    return User.findOne({
+      where: { phone_number: phone, bank_id: bankId },
+      raw: true,
+    });
   },
 
   async create(data) {
-    const [id] = await db(TABLE).insert(data);
-    return id;
+    const row = await User.create(data);
+    return row.id;
   },
 
   async update(id, patch) {
-    const affected = await db(TABLE).where({ id }).update(patch);
+    const [affected] = await User.update(patch, { where: { id } });
     return affected > 0;
   },
 
   async touchActivity(id) {
     // Best-effort; not awaited in request paths per spec ("best-effort, throttled").
-    return db(TABLE).where({ id }).update({ last_activity_at: new Date() });
+    return User.update({ last_activity_at: new Date() }, { where: { id } });
   },
 
   /**
    * Admin user search — §6.10. `q` matches phone, telegram_username, branch_name.
+   *
+   * Returns rows with the join shape expected by reportingService.listUsers.
    */
   async search({ q, bankId, regionId, zoneId, gradeId, isActive, page = 1, pageSize = 25 }) {
-    const query = db(TABLE)
-      .select(
-        'users.id',
-        'users.phone_number as phone',
-        'users.telegram_username as telegramUsername',
-        'users.bank_id as bankId',
-        'banks.name as bankName',
-        'users.current_location_id as zoneId',
-        'zones.name as zoneName',
-        'regions.id as regionId',
-        'regions.name as regionName',
-        'users.branch_name as branchName',
-        'users.grade_id as gradeId',
-        'users.is_active as isActive',
-        'users.created_at as createdAt',
-        'users.last_activity_at as lastActivityAt',
-      )
-      .join('banks', 'banks.id', '=', 'users.bank_id')
-      .join('locations as zones', 'zones.id', '=', 'users.current_location_id')
-      .join('locations as regions', 'regions.id', '=', 'zones.parent_id');
+    const where = [];
+    const replacements = {};
 
     if (q) {
-      query.andWhere((b) => {
-        b.where('users.phone_number', 'like', `%${q}%`)
-          .orWhere('users.telegram_username', 'like', `%${q}%`)
-          .orWhere('users.branch_name', 'like', `%${q}%`);
-      });
+      where.push(
+        '(users.phone_number LIKE :q OR users.telegram_username LIKE :q OR users.branch_name LIKE :q)',
+      );
+      replacements.q = `%${q}%`;
     }
-    if (bankId) query.andWhere('users.bank_id', bankId);
-    if (zoneId) query.andWhere('users.current_location_id', zoneId);
-    if (regionId) query.andWhere('regions.id', regionId);
-    if (gradeId) query.andWhere('users.grade_id', gradeId);
-    if (isActive !== undefined) query.andWhere('users.is_active', isActive);
+    if (bankId) {
+      where.push('users.bank_id = :bankId');
+      replacements.bankId = bankId;
+    }
+    if (zoneId) {
+      where.push('users.current_location_id = :zoneId');
+      replacements.zoneId = zoneId;
+    }
+    if (regionId) {
+      where.push('regions.id = :regionId');
+      replacements.regionId = regionId;
+    }
+    if (gradeId) {
+      where.push('users.grade_id = :gradeId');
+      replacements.gradeId = gradeId;
+    }
+    if (isActive !== undefined) {
+      where.push('users.is_active = :isActive');
+      replacements.isActive = isActive ? 1 : 0;
+    }
 
-    const totalRow = await query.clone().count('* as count').first();
-    const total = Number(totalRow?.count || 0);
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    const rows = await query
-      .clone()
-      .orderBy('users.created_at', 'desc')
-      .limit(pageSize)
-      .offset((page - 1) * pageSize);
+    // Count query (without the join for performance — joins are only needed for the rows).
+    const countWhere = where.filter((c) => !c.startsWith('regions.')).join(' AND ');
+    const countClause = countWhere
+      ? `WHERE ${countWhere.replace(/users\./g, '')}`
+      : '';
+    const countRows = await sequelize.query(
+      `SELECT COUNT(*) AS count FROM users ${countClause}`,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      },
+    );
+    const total = Number(countRows[0]?.count || 0);
 
-    // Attach counts per user (interestsCount, purchasesCount) in one batched query.
+    const offset = (page - 1) * pageSize;
+    const rows = await sequelize.query(
+      `SELECT
+         users.id,
+         users.phone_number AS phone,
+         users.telegram_username AS telegramUsername,
+         users.bank_id AS bankId,
+         banks.name AS bankName,
+         users.current_location_id AS zoneId,
+         zones.name AS zoneName,
+         regions.id AS regionId,
+         regions.name AS regionName,
+         users.branch_name AS branchName,
+         users.grade_id AS gradeId,
+         users.is_active AS isActive,
+         users.created_at AS createdAt,
+         users.last_activity_at AS lastActivityAt
+       FROM users
+       JOIN banks ON banks.id = users.bank_id
+       JOIN locations AS zones ON zones.id = users.current_location_id
+       JOIN locations AS regions ON regions.id = zones.parent_id
+       ${whereClause}
+       ORDER BY users.created_at DESC
+       LIMIT :limit OFFSET :offset`,
+      {
+        replacements: { ...replacements, limit: pageSize, offset },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    // Attach counts per user (interestsCount, purchasesCount) in batched queries.
     if (rows.length) {
       const ids = rows.map((r) => r.id);
-      const interestCounts = await db('transfer_interests')
-        .select('user_id')
-        .count('* as count')
-        .whereIn('user_id', ids)
-        .groupBy('user_id');
-      const purchaseCounts = await db('purchases')
-        .select('buyer_id')
-        .count('* as count')
-        .whereIn('buyer_id', ids)
-        .groupBy('buyer_id');
+      const interestCounts = await TransferInterest.findAll({
+        attributes: [
+          'user_id',
+          [literal('COUNT(*)'), 'count'],
+        ],
+        where: { user_id: { [Op.in]: ids } },
+        group: ['user_id'],
+        raw: true,
+      });
+      const purchaseCounts = await Purchase.findAll({
+        attributes: ['buyer_id', [literal('COUNT(*)'), 'count']],
+        where: { buyer_id: { [Op.in]: ids } },
+        group: ['buyer_id'],
+        raw: true,
+      });
       const intMap = new Map(interestCounts.map((r) => [r.user_id, Number(r.count)]));
       const purMap = new Map(purchaseCounts.map((r) => [r.buyer_id, Number(r.count)]));
 

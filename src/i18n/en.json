@@ -41,6 +41,7 @@
   "ACCOUNT_DISABLED": "Account is disabled. Contact your administrator.",
   "INVALID_TOKEN": "Authentication required.",
   "INVALID_TOKEN_FOR_ROUTER": "Token is not valid for this router.",
+  "INVALID_INIT_DATA": "Telegram initData verification failed.",
   "INSUFFICIENT_ROLE": "Your role does not permit this action.",
   "VALIDATION_FAILED": "Request validation failed.",
   "INTERNAL_ERROR": "An unexpected error occurred.",

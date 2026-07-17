@@ -4,7 +4,7 @@
  */
 const request = require('supertest');
 const { app, registerUser, getRefs } = require('./helpers');
-const db = require('../src/db/knex');
+const db = require('./db');
 
 describe('Onboarding wizard (§6.3)', () => {
   let telegramIdCounter = 1000000;

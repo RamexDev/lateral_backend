@@ -1,79 +1,89 @@
 /**
  * Bank repository — CRUD over `banks` reference data.
  * See backend.md §3.2 and §6.9 (admin bank endpoints).
+ *
+ * Uses Sequelize models. All queries use `raw: true` to return plain JS objects
+ * with the underlying DB column names (snake_case), matching the rest of the
+ * service layer.
  */
-const db = require('../db/knex');
+const { Bank, User } = require('../db/models');
+const sequelize = require('../db/sequelize');
+const { QueryTypes } = require('sequelize');
 const TABLE = 'banks';
 
-const pickColumn = (lang) => (lang === 'am' ? 'name_am as name' : 'name');
+/**
+ * Build the SELECT attribute list — resolves the localized name column.
+ * Returns an array of Sequelize attribute selectors.
+ */
+function bankAttributes(lang) {
+  if (lang === 'am') {
+    return ['id', 'nickname', 'swift_code', 'year_established', 'is_active', ['name_am', 'name']];
+  }
+  return ['id', 'nickname', 'swift_code', 'year_established', 'is_active', 'name'];
+}
 
 module.exports = {
   TABLE,
 
   async findById(id, lang = 'en') {
-    return db(TABLE)
-      .select(
+    return Bank.findOne({
+      attributes: bankAttributes(lang),
+      where: { id },
+      raw: true,
+    });
+  },
+
+  async findByIdRaw(id) {
+    return Bank.findByPk(id, { raw: true });
+  },
+
+  async list({ page = 1, pageSize = 50, isActive } = {}) {
+    const where = {};
+    if (isActive !== undefined) where.is_active = isActive;
+
+    const { rows, count } = await Bank.findAndCountAll({
+      attributes: [
         'id',
+        'name',
+        'name_am',
         'nickname',
         'swift_code',
         'year_established',
         'is_active',
-        db.raw(pickColumn(lang)),
-      )
-      .where({ id })
-      .first();
-  },
-
-  async findByIdRaw(id) {
-    return db(TABLE).select('*').where({ id }).first();
-  },
-
-  async list({ page = 1, pageSize = 50, isActive } = {}) {
-    const query = db(TABLE).select(
-      'id',
-      'name',
-      'name_am',
-      'nickname',
-      'swift_code',
-      'year_established',
-      'is_active',
-    );
-    if (isActive !== undefined) query.where({ is_active: isActive });
-    const total = await query.clone().count('* as count').first();
-    const rows = await query
-      .clone()
-      .orderBy('name', 'asc')
-      .limit(pageSize)
-      .offset((page - 1) * pageSize);
-    return { rows, total: total?.count || 0 };
+      ],
+      where,
+      order: [['name', 'ASC']],
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+      raw: true,
+    });
+    return { rows, total: count };
   },
 
   async listActive(lang = 'en') {
-    return db(TABLE)
-      .select('id', 'nickname', 'swift_code', db.raw(pickColumn(lang)))
-      .where({ is_active: true })
-      .orderBy('name', 'asc');
+    return Bank.findAll({
+      attributes: bankAttributes(lang),
+      where: { is_active: true },
+      order: [['name', 'ASC']],
+      raw: true,
+    });
   },
 
   async create(data) {
-    const [row] = await db(TABLE).insert(data);
-    return row;
+    const row = await Bank.create(data);
+    return row.id;
   },
 
   async update(id, patch) {
-    const affected = await db(TABLE).where({ id }).update(patch);
+    const [affected] = await Bank.update(patch, { where: { id } });
     return affected > 0;
   },
 
   async findByNickname(nickname) {
-    return db(TABLE).select('*').where({ nickname }).first();
+    return Bank.findOne({ where: { nickname }, raw: true });
   },
 
   async countActiveUsers(bankId) {
-    const res = await db('users')
-      .where({ bank_id: bankId, is_active: true })
-      .count('* as count')
-      .first();
-    return Number(res?.count || 0);
+    return User.count({ where: { bank_id: bankId, is_active: true } });
   },
 };

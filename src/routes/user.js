@@ -8,6 +8,7 @@ const matchingService = require('../services/matchingService');
 const purchaseService = require('../services/purchaseService');
 const notificationService = require('../services/notificationService');
 const { validate } = require('../middlewares/validate');
+const { feedLimiter, purchaseLimiter } = require('../middlewares/rateLimit');
 const interestSchemas = require('../schemas/interests');
 const profileSchemas = require('../schemas/profile');
 const marketplaceSchemas = require('../schemas/marketplace');
@@ -103,6 +104,7 @@ router.put('/me', validate(profileSchemas.updateMeSchema), async (req, res, next
 
 router.get(
   '/marketplace/feed',
+  feedLimiter,
   validate(marketplaceSchemas.feedQuerySchema, 'query'),
   async (req, res, next) => {
     try {
@@ -122,14 +124,19 @@ router.get(
 
 // ─── Purchases & payments (§6.7) ────────────────────────────────────────────
 
-router.post('/purchases', validate(marketplaceSchemas.purchaseSchema), async (req, res, next) => {
-  try {
-    const data = await purchaseService.initiatePurchase(req.user, req.body.targetUserId);
-    return success(res, data, undefined, 200);
-  } catch (err) {
-    next(err);
-  }
-});
+router.post(
+  '/purchases',
+  purchaseLimiter,
+  validate(marketplaceSchemas.purchaseSchema),
+  async (req, res, next) => {
+    try {
+      const data = await purchaseService.initiatePurchase(req.user, req.body.targetUserId);
+      return success(res, data, undefined, 200);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 router.get('/me/purchases', async (req, res, next) => {
   try {

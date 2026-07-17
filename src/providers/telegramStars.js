@@ -40,13 +40,15 @@ class TelegramStarsProvider extends PaymentProvider {
 
   /**
    * Validates the X-Telegram-Bot-Api-Secret-Token header (SEC-007).
-   * In tests, the webhook route is called directly without this header, so we
-   * treat an empty config secret as "no validation required".
+   * Reads the secret fresh from env on each call so tests can toggle it without
+   * needing to bust the module cache. An empty/undefined secret means "no
+   * validation required" (the test default — webhook is invoked directly).
    */
   verifyWebhook(req) {
-    if (!config.telegram.webhookSecret) return true;
+    const secret = process.env.TELEGRAM_WEBHOOK_SECRET || config.telegram.webhookSecret || '';
+    if (!secret) return true;
     const header = req.headers['x-telegram-bot-api-secret-token'];
-    return header === config.telegram.webhookSecret;
+    return header === secret;
   }
 
   parseSuccessfulPayment(payload) {

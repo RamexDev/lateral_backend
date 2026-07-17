@@ -2,43 +2,51 @@
  * Purchase repository.
  * See backend.md §3.2 (purchases) and §6.7 (purchase API).
  */
-const db = require('../db/knex');
+const { Purchase } = require('../db/models');
+const { literal } = require('sequelize');
 const TABLE = 'purchases';
 
 module.exports = {
   TABLE,
 
   async findById(id) {
-    return db(TABLE).select('*').where({ id }).first();
+    return Purchase.findByPk(id, { raw: true });
   },
 
   async findByBuyerAndTarget(buyerId, targetUserId) {
-    return db(TABLE).select('*').where({ buyer_id: buyerId, target_user_id: targetUserId }).first();
+    return Purchase.findOne({
+      where: { buyer_id: buyerId, target_user_id: targetUserId },
+      raw: true,
+    });
   },
 
   async listByBuyer(buyerId) {
-    return db(TABLE).select('*').where({ buyer_id: buyerId }).orderBy('created_at', 'desc');
+    return Purchase.findAll({
+      where: { buyer_id: buyerId },
+      order: [['created_at', 'DESC']],
+      raw: true,
+    });
   },
 
   async listByTarget(targetUserId) {
-    return db(TABLE)
-      .select('*')
-      .where({ target_user_id: targetUserId })
-      .orderBy('created_at', 'desc');
+    return Purchase.findAll({
+      where: { target_user_id: targetUserId },
+      order: [['created_at', 'DESC']],
+      raw: true,
+    });
   },
 
   async create(data) {
-    const [id] = await db(TABLE).insert(data);
-    return id;
+    const row = await Purchase.create(data);
+    return row.id;
   },
 
   async updatePaymentLink(id, paymentId) {
-    return db(TABLE).where({ id }).update({ payment_id: paymentId });
+    return Purchase.update({ payment_id: paymentId }, { where: { id } });
   },
 
   async countOfTarget(targetUserId) {
-    const row = await db(TABLE).where({ target_user_id: targetUserId }).count('* as count').first();
-    return Number(row?.count || 0);
+    return Purchase.count({ where: { target_user_id: targetUserId } });
   },
 
   async sumRevenueOfTarget(targetUserId, pricePerPurchase) {
@@ -47,7 +55,7 @@ module.exports = {
   },
 
   async totalSpentByBuyer(buyerId, pricePerPurchase) {
-    const row = await db(TABLE).where({ buyer_id: buyerId }).count('* as count').first();
-    return Number(row?.count || 0) * pricePerPurchase;
+    const count = await Purchase.count({ where: { buyer_id: buyerId } });
+    return count * pricePerPurchase;
   },
 };

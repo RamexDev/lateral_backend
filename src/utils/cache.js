@@ -31,6 +31,22 @@ function createMemoryBackend() {
       const expiresAt = ttlSeconds ? Date.now() + ttlSeconds * 1000 : null;
       store.set(key, { value, expiresAt });
     },
+    /**
+     * Atomic set-if-not-exists with TTL. Returns true if the value was set
+     * (key didn't exist), false otherwise. Mirrors Redis's `SET key value NX EX ttl`.
+     *
+     * Used by the purchase double-charge mutex (§7) so the lock can never leak
+     * even if the process crashes between acquire and TTL-set.
+     */
+    async add(key, value, ttlSeconds) {
+      const existing = store.get(key);
+      if (existing && (!existing.expiresAt || existing.expiresAt > Date.now())) {
+        return false;
+      }
+      const expiresAt = ttlSeconds ? Date.now() + ttlSeconds * 1000 : null;
+      store.set(key, { value, expiresAt });
+      return true;
+    },
     async setex(key, ttlSeconds, value) {
       return this.set(key, value, ttlSeconds);
     },

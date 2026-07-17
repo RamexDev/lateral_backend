@@ -2,15 +2,15 @@
  * Notification repository.
  * See backend.md §3.2 (notifications) and §9 (notification system).
  */
-const db = require('../db/knex');
+const { Notification } = require('../db/models');
 const TABLE = 'notifications';
 
 module.exports = {
   TABLE,
 
   async create(data) {
-    const [id] = await db(TABLE).insert(data);
-    return id;
+    const row = await Notification.create(data);
+    return row.id;
   },
 
   /**
@@ -22,34 +22,38 @@ module.exports = {
     let inserted = 0;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const chunk = rows.slice(i, i + CHUNK);
-      await db(TABLE).insert(chunk);
+      await Notification.bulkCreate(chunk, { validate: false });
       inserted += chunk.length;
     }
     return inserted;
   },
 
   async listByUser(userId, { limit = 50 } = {}) {
-    return db(TABLE)
-      .select(
+    return Notification.findAll({
+      attributes: [
         'id',
         'type',
         'channel',
         'payload',
         'status',
-        'sent_at as sentAt',
-        'created_at as createdAt',
-      )
-      .where({ user_id: userId })
-      .orderBy('created_at', 'desc')
-      .limit(limit);
+        ['sent_at', 'sentAt'],
+        ['created_at', 'createdAt'],
+      ],
+      where: { user_id: userId },
+      order: [['created_at', 'DESC']],
+      limit,
+      raw: true,
+    });
   },
 
   async markSent(id) {
-    return db(TABLE).where({ id }).update({ status: 'sent', sent_at: new Date() });
+    return Notification.update(
+      { status: 'sent', sent_at: new Date() },
+      { where: { id } },
+    );
   },
 
   async countByStatus(status) {
-    const row = await db(TABLE).where({ status }).count('* as count').first();
-    return Number(row?.count || 0);
+    return Notification.count({ where: { status } });
   },
 };

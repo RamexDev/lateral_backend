@@ -7,7 +7,7 @@
  */
 const request = require('supertest');
 const app = require('../src/app').createApp();
-const db = require('../src/db/knex');
+const db = require('./db');
 const authService = require('../src/services/authService');
 const staffRepo = require('../src/repositories/staffRepository');
 const passwordUtil = require('../src/utils/password');

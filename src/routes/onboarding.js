@@ -4,11 +4,16 @@ const router = express.Router();
 const onboardingService = require('../services/onboardingService');
 const interestService = require('../services/interestService');
 const { validate } = require('../middlewares/validate');
+const { requireInitData } = require('../middlewares/initData');
 const schemas = require('../schemas/onboarding');
 const interestSchemas = require('../schemas/interests');
 const { success } = require('../utils/response');
 const { ApiError } = require('../utils/ApiError');
 const i18n = require('../services/localizationService');
+
+// SEC-003: validate X-Telegram-Init-Data on Mini App requests.
+// If the header is absent (bot-gateway internal call), the request is allowed through.
+router.use(requireInitData());
 
 /**
  * POST /onboarding/start — begin or resume the registration wizard.

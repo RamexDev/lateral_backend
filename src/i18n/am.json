@@ -41,6 +41,7 @@
   "ACCOUNT_DISABLED": "መለያው ተሰናክሏል።",
   "INVALID_TOKEN": "ማረጋገጫ ያስፈልግዎታል።",
   "INVALID_TOKEN_FOR_ROUTER": "ቶከን ለዚህ ሩተር ትክክል አይደለም።",
+  "INVALID_INIT_DATA": "የቴሌግራም initData ማረጋገጥ አልተሳካም።",
   "INSUFFICIENT_ROLE": "ሚናዎ ይህንን እርምጃ አይፈቅድም።",
   "VALIDATION_FAILED": "የጥያቄ ማረጋገጥ አልተሳካም።",
   "INTERNAL_ERROR": "ያልተጠበቀ ስህተት ተፈጥሯል።",

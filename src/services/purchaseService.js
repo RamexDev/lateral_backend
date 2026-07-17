@@ -37,14 +37,18 @@ async function initiatePurchase(buyer, targetUserId) {
   const lang = buyer.preferred_language;
 
   // Race-window mutex (§7 — `lock:purchase:{buyerId}:{targetId}`).
+  // Uses the cache's atomic `add(key, value, ttl)` operation so the lock can never
+  // leak even if the process crashes between acquire and TTL-set. Mirrors Redis's
+  // `SET key value NX EX ttl`. The DB unique constraint (uq_buyer_target) is the
+  // real guard; this mutex just closes the user-visible race window for invoice
+  // link creation.
   const cache = await getBackend();
   const lockKey = `lock:purchase:${buyer.id}:${targetUserId}`;
-  const acquired = await cache.incr(lockKey);
-  if (acquired !== 1) {
+  const acquired = await cache.add(lockKey, '1', 5);
+  if (!acquired) {
     // Another in-flight request already started this purchase — treat as conflict.
     throw ApiError.conflict('ALREADY_PURCHASED', i18n.t('ALREADY_PURCHASED', lang));
   }
-  await cache.expire(lockKey, 5); // short-lived
 
   try {
     // Already purchased? (BR-006 — never charge twice)

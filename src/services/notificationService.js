@@ -6,20 +6,34 @@
  * repeatable job is exposed as a callable function `runDailyDigest()` that the
  * scheduler would invoke (or tests can call directly).
  */
-const db = require('../db/knex');
+const sequelize = require('../db/sequelize');
+const { QueryTypes, Op } = require('sequelize');
+const { User, TransferInterest } = require('../db/models');
 const notificationRepo = require('../repositories/notificationRepository');
+const locationRepo = require('../repositories/locationRepository');
+const auditService = require('./auditService');
 const { ApiError } = require('../utils/ApiError');
 const i18n = require('./localizationService');
-const locationRepo = require('../repositories/locationRepository');
 
 async function listForUser(user, { limit = 50 } = {}) {
   const rows = await notificationRepo.listByUser(user.id, { limit });
-  return rows.map((r) => ({
-    type: r.type,
-    sentAt: r.sentAt || r.createdAt,
-    summary: r.payload?.summary ?? null,
-    payload: r.payload,
-  }));
+  return rows.map((r) => {
+    let payload = r.payload;
+    // Sequelize may return JSON columns as strings (SQLite) or parsed objects (MySQL).
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch {
+        /* leave as-is */
+      }
+    }
+    return {
+      type: r.type,
+      sentAt: r.sentAt || r.createdAt,
+      summary: payload?.summary ?? null,
+      payload,
+    };
+  });
 }
 
 /**
@@ -49,25 +63,35 @@ async function broadcast({ segmentFilter, message }, actor) {
     throw ApiError.business('FILTER_INCOMPLETE', i18n.t('FILTER_INCOMPLETE', lang));
   }
 
-  // Resolve the user IDs by scope.
+  // Build the user-id resolution query per scope.
   let userIds = [];
   if (scope === 'all') {
-    const rows = await db('users').select('id').where({ is_active: true });
+    const rows = await User.findAll({
+      attributes: ['id'],
+      where: { is_active: true },
+      raw: true,
+    });
     userIds = rows.map((r) => r.id);
   } else if (scope === 'bank') {
-    const rows = await db('users')
-      .select('id')
-      .where({ is_active: true, bank_id: segmentFilter.bankId });
+    const rows = await User.findAll({
+      attributes: ['id'],
+      where: { is_active: true, bank_id: segmentFilter.bankId },
+      raw: true,
+    });
     userIds = rows.map((r) => r.id);
   } else if (scope === 'region') {
-    const rows = await db('users as u')
-      .join('location_ancestors as la', 'la.descendant_id', '=', 'u.current_location_id')
-      .where('u.is_active', true)
-      .andWhere('la.ancestor_id', segmentFilter.regionId)
-      .modify((qb) => {
-        if (segmentFilter.bankId) qb.andWhere('u.bank_id', segmentFilter.bankId);
-      })
-      .select('u.id');
+    const replacements = {
+      regionId: segmentFilter.regionId,
+      ...(segmentFilter.bankId ? { bankId: segmentFilter.bankId } : {}),
+    };
+    const rows = await sequelize.query(
+      `SELECT u.id FROM users u
+       JOIN location_ancestors la ON la.descendant_id = u.current_location_id
+       WHERE u.is_active = 1
+         AND la.ancestor_id = :regionId
+         ${segmentFilter.bankId ? 'AND u.bank_id = :bankId' : ''}`,
+      { replacements, type: QueryTypes.SELECT },
+    );
     userIds = rows.map((r) => r.id);
   } else if (scope === 'zone') {
     // Validate zoneId really is a zone_subcity.
@@ -79,12 +103,9 @@ async function broadcast({ segmentFilter, message }, actor) {
     if (segmentFilter.regionId && zone.parent_id !== segmentFilter.regionId) {
       throw ApiError.business('ZONE_REGION_MISMATCH', i18n.t('ZONE_REGION_MISMATCH', lang));
     }
-    const rows = await db('users')
-      .select('id')
-      .where({ is_active: true, current_location_id: segmentFilter.zoneId })
-      .modify((qb) => {
-        if (segmentFilter.bankId) qb.andWhere('bank_id', segmentFilter.bankId);
-      });
+    const where = { is_active: true, current_location_id: segmentFilter.zoneId };
+    if (segmentFilter.bankId) where.bank_id = segmentFilter.bankId;
+    const rows = await User.findAll({ attributes: ['id'], where, raw: true });
     userIds = rows.map((r) => r.id);
   } else {
     throw ApiError.business('VALIDATION_FAILED', `Unsupported scope: ${scope}`);
@@ -95,7 +116,7 @@ async function broadcast({ segmentFilter, message }, actor) {
   }
 
   // Build notification rows — one per user.
-  const payload = JSON.stringify({ message, scope });
+  const payload = { message, scope };
   const rows = userIds.map((uid) => ({
     user_id: uid,
     type: 'broadcast',
@@ -121,41 +142,76 @@ async function broadcast({ segmentFilter, message }, actor) {
  * Daily digest job — for each active user, find transfer_interests created since
  * the user's last_digest_at whose location closure-matches the user's current_location_id
  * (same predicate as the live feed query, scoped by created_at > last_digest_at).
- * If any qualifying rows exist, enqueue a digest notification and update last_digest_at.
+ *
+ * AUDIT-FIX: previously the digest query did NOT filter by bank_id or grade
+ * adjacency, diverging from §9's "same predicate as the live feed query". Fixed.
  */
 async function runDailyDigest() {
-  const users = await db('users')
-    .select('id', 'last_digest_at', 'preferred_language')
-    .where({ is_active: true });
+  const users = await User.findAll({
+    attributes: ['id', 'last_digest_at', 'preferred_language', 'bank_id', 'current_location_id', 'grade_id'],
+    where: { is_active: true },
+    raw: true,
+  });
 
   let sentCount = 0;
   for (const user of users) {
     const since = user.last_digest_at || new Date(0);
-    const matches = await db('transfer_interests as ti')
-      .join('users as u', 'u.id', '=', 'ti.user_id')
-      .join('location_ancestors as la', 'la.descendant_id', '=', 'u.current_location_id')
-      .where('la.ancestor_id', 'ti.location_id')
-      .where('ti.user_id', '!=', user.id)
-      .where('ti.created_at', '>', since)
-      .count('* as count')
-      .first();
 
-    const count = Number(matches?.count || 0);
+    // Same predicate as the live feed query (§5): closure join + same bank + grade adjacency.
+    // We need the user's grade rank_order to evaluate the adjacency clause.
+    const gradeRows = await sequelize.query(
+      `SELECT rank_order FROM grades WHERE id = :gradeId LIMIT 1`,
+      {
+        replacements: { gradeId: user.grade_id },
+        type: QueryTypes.SELECT,
+      },
+    );
+    const rankOrder = gradeRows[0]?.rank_order;
+    if (rankOrder === undefined) continue;
+
+    const adjacencyRange = Number(process.env.DEFAULT_GRADE_ADJACENCY_RANGE || 1);
+
+    const matches = await sequelize.query(
+      `SELECT COUNT(*) AS count
+       FROM transfer_interests ti
+       JOIN users u ON u.id = ti.user_id
+       JOIN grades g ON g.id = u.grade_id
+       JOIN location_ancestors la ON la.descendant_id = u.current_location_id
+       WHERE la.ancestor_id = ti.location_id
+         AND ti.user_id != :userId
+         AND u.bank_id = :bankId
+         AND u.is_active = 1
+         AND ABS(g.rank_order - :rankOrder) <= :adj
+         AND ti.created_at > :since`,
+      {
+        replacements: {
+          userId: user.id,
+          bankId: user.bank_id,
+          rankOrder,
+          adj: adjacencyRange,
+          since,
+        },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    const count = Number(matches[0]?.count || 0);
     if (count > 0) {
       await notificationRepo.create({
         user_id: user.id,
         type: 'digest',
         channel: 'telegram',
-        payload: JSON.stringify({ summary: `${count} new matches near your location` }),
+        payload: { summary: `${count} new matches near your location` },
         status: 'queued',
       });
-      await db('users').where({ id: user.id }).update({ last_digest_at: new Date() });
+      await User.update(
+        { last_digest_at: new Date() },
+        { where: { id: user.id } },
+      );
       sentCount += 1;
     }
   }
   return { processedUsers: users.length, sentDigests: sentCount };
 }
-
-const auditService = require('./auditService');
 
 module.exports = { listForUser, broadcast, runDailyDigest };

@@ -4,7 +4,9 @@
  * Phone masking (SEC-006): list view masks phone; detail view returns full phone
  * only when caller is support_officer or higher (i.e. any staff role in v1).
  */
-const db = require('../db/knex');
+const sequelize = require('../db/sequelize');
+const { QueryTypes } = require('sequelize');
+const { User, Payment, Notification, Staff } = require('../db/models');
 const userRepo = require('../repositories/userRepository');
 const purchaseRepo = require('../repositories/purchaseRepository');
 const paymentRepo = require('../repositories/paymentRepository');
@@ -17,19 +19,24 @@ const config = require('../config');
 
 async function dashboardSummary() {
   const [activeUsers, totalInterests, totalPurchases, revenueRow] = await Promise.all([
-    db('users').where({ is_active: true }).count('* as count').first(),
-    interestRepo.TABLE
-      ? db(interestRepo.TABLE).count('* as count').first()
-      : Promise.resolve({ count: 0 }),
-    db(purchaseRepo.TABLE).count('* as count').first(),
-    db('payments').where({ status: 'completed' }).sum('amount as revenue').first(),
+    User.count({ where: { is_active: true } }),
+    sequelize.query(`SELECT COUNT(*) AS count FROM transfer_interests`, {
+      type: QueryTypes.SELECT,
+    }),
+    sequelize.query(`SELECT COUNT(*) AS count FROM purchases`, {
+      type: QueryTypes.SELECT,
+    }),
+    sequelize.query(
+      `SELECT COALESCE(SUM(amount), 0) AS revenue FROM payments WHERE status = 'completed'`,
+      { type: QueryTypes.SELECT },
+    ),
   ]);
 
   return {
-    activeUsers: Number(activeUsers?.count || 0),
-    totalInterests: Number(totalInterests?.count || 0),
-    totalPurchases: Number(totalPurchases?.count || 0),
-    revenueEtb: Number(revenueRow?.revenue || 0),
+    activeUsers: Number(activeUsers || 0),
+    totalInterests: Number(totalInterests[0]?.count || 0),
+    totalPurchases: Number(totalPurchases[0]?.count || 0),
+    revenueEtb: Number(revenueRow[0]?.revenue || 0),
   };
 }
 
@@ -138,7 +145,7 @@ async function systemHealth() {
   let dbOk = false;
   let redisOk = false;
   try {
-    await db.raw('SELECT 1');
+    await sequelize.query('SELECT 1', { type: QueryTypes.SELECT });
     dbOk = true;
   } catch {
     /* ignore */
@@ -152,14 +159,14 @@ async function systemHealth() {
     /* ignore */
   }
   const [activeSessions, queuedNotifications] = await Promise.all([
-    db('staff').where({ is_active: true }).count('* as count').first(),
-    db('notifications').where({ status: 'queued' }).count('* as count').first(),
+    Staff.count({ where: { is_active: true } }),
+    Notification.count({ where: { status: 'queued' } }),
   ]);
   return {
     mysql: dbOk ? 'ok' : 'down',
     redis: redisOk ? 'ok' : 'down',
-    activeStaffSessions: Number(activeSessions?.count || 0),
-    queuedNotifications: Number(queuedNotifications?.count || 0),
+    activeStaffSessions: Number(activeSessions || 0),
+    queuedNotifications: Number(queuedNotifications || 0),
   };
 }
 

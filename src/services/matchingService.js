@@ -13,7 +13,9 @@
  * Feed caching (§5.1): cached in Redis for 30–60s, keyed by user+page+adjacency,
  * bypassed by ?fresh=true (FR-MATCH-007).
  */
-const db = require('../db/knex');
+const sequelize = require('../db/sequelize');
+const { QueryTypes } = require('sequelize');
+const { Purchase, User } = require('../db/models');
 const { getBackend } = require('../utils/cache');
 const config = require('../config');
 const locationRepo = require('../repositories/locationRepository');
@@ -23,7 +25,8 @@ const i18n = require('./localizationService');
 const CACHE_TTL_SECONDS = 30;
 
 /**
- * Run the live matching query. Mirrors §5 SQL using Knex's raw bindings.
+ * Run the live matching query. Mirrors §5 SQL using Sequelize's raw query API
+ * with bound parameters (safe against SQL injection).
  *
  * Returns rows shaped like:
  *   {
@@ -42,16 +45,14 @@ async function runMatchingQuery({
   lang,
 }) {
   const nameCol = lang === 'am' ? 'l.name_am' : 'l.name';
-  const gradeBandCol = lang === 'am' ? 'g2.band_label_am' : 'g2.band_label';
   const gradeTierCol = lang === 'am' ? 'g2.tier_classification_am' : 'g2.tier_classification';
 
   // SQLite boolean: returns 0/1. Coerce later.
-  const rows = await db.raw(
+  const rows = await sequelize.query(
     `SELECT
        ti.user_id             AS candidateUserId,
        ti.id                  AS matchedInterestId,
        g2.grade_number        AS candidateGradeNumber,
-       ${gradeBandCol}        AS candidateBandLabel,
        ${gradeTierCol}        AS candidateTierClassification,
        ti.location_id         AS matchedLocationId,
        ${nameCol}             AS matchedLocationName,
@@ -78,22 +79,60 @@ async function runMatchingQuery({
        AND ABS(g2.rank_order - ?) <= ?
      ORDER BY isMutualMatch DESC, la.depth ASC, ti.created_at DESC
      LIMIT ? OFFSET ?`,
-    [
-      requestingUserId,
-      requestingUserLocationId,
-      requestingUserBankId,
-      requestingUserId,
-      requestingUserRankOrder,
-      adjacencyRange,
-      pageSize,
-      (page - 1) * pageSize,
-    ],
+    {
+      replacements: [
+        requestingUserId,
+        requestingUserLocationId,
+        requestingUserBankId,
+        requestingUserId,
+        requestingUserRankOrder,
+        adjacencyRange,
+        pageSize,
+        (page - 1) * pageSize,
+      ],
+      type: QueryTypes.SELECT,
+    },
   );
 
-  // knex.raw returns [rows, fields] for mysql2, but for better-sqlite3 just returns rows.
-  return Array.isArray(rows) && Array.isArray(rows[0]) && rows[0] !== undefined && rows.length === 2
-    ? rows[0]
-    : rows;
+  return rows;
+}
+
+/**
+ * Count the total number of matching candidates for the same predicate (§5).
+ * Used to populate `totalResults` in the feed response — the page-size value was
+ * misleading before this fix.
+ */
+async function countMatchingCandidates({
+  requestingUserId,
+  requestingUserBankId,
+  requestingUserLocationId,
+  requestingUserRankOrder,
+  adjacencyRange,
+}) {
+  const rows = await sequelize.query(
+    `SELECT COUNT(*) AS count
+     FROM transfer_interests ti
+     JOIN users  u2 ON u2.id = ti.user_id
+     JOIN grades g2 ON g2.id = u2.grade_id
+     JOIN location_ancestors la
+          ON la.ancestor_id   = ti.location_id
+         AND la.descendant_id = ?
+     WHERE u2.bank_id  = ?
+       AND u2.id       != ?
+       AND u2.is_active = 1
+       AND ABS(g2.rank_order - ?) <= ?`,
+    {
+      replacements: [
+        requestingUserLocationId,
+        requestingUserBankId,
+        requestingUserId,
+        requestingUserRankOrder,
+        adjacencyRange,
+      ],
+      type: QueryTypes.SELECT,
+    },
+  );
+  return Number(rows[0]?.count || 0);
 }
 
 /**
@@ -124,40 +163,52 @@ async function getFeed(user, { page = 1, pageSize = 10, fresh = false } = {}) {
     return { results: [], page, pageSize, totalResults: 0 };
   }
 
-  const rows = await runMatchingQuery({
-    requestingUserId: user.id,
-    requestingUserBankId: user.bank_id,
-    requestingUserLocationId: user.current_location_id,
-    requestingUserRankOrder: grade.rank_order,
-    adjacencyRange,
-    page,
-    pageSize,
-    lang,
-  });
+  const [rows, totalResults] = await Promise.all([
+    runMatchingQuery({
+      requestingUserId: user.id,
+      requestingUserBankId: user.bank_id,
+      requestingUserLocationId: user.current_location_id,
+      requestingUserRankOrder: grade.rank_order,
+      adjacencyRange,
+      page,
+      pageSize,
+      lang,
+    }),
+    countMatchingCandidates({
+      requestingUserId: user.id,
+      requestingUserBankId: user.bank_id,
+      requestingUserLocationId: user.current_location_id,
+      requestingUserRankOrder: grade.rank_order,
+      adjacencyRange,
+    }),
+  ]);
 
   // Resolve which candidates the viewer has already purchased (so we can show unlocked contact info).
   const candidateIds = rows.map((r) => r.candidateUserId);
   const unlockedSet = new Set();
   if (candidateIds.length) {
-    const purchases = await db('purchases')
-      .select('target_user_id')
-      .where({ buyer_id: user.id })
-      .whereIn('target_user_id', candidateIds);
+    const purchases = await Purchase.findAll({
+      attributes: ['target_user_id'],
+      where: { buyer_id: user.id, target_user_id: candidateIds },
+      raw: true,
+    });
     for (const p of purchases) unlockedSet.add(p.target_user_id);
   }
 
   // For unlocked candidates, fetch the contact fields in one query.
   let contactById = new Map();
   if (unlockedSet.size) {
-    const contacts = await db('users')
-      .select(
+    const contacts = await User.findAll({
+      attributes: [
         'id',
-        'telegram_username as telegramUsername',
-        'phone_number as phone',
-        'branch_name as branchName',
+        ['telegram_username', 'telegramUsername'],
+        ['phone_number', 'phone'],
+        ['branch_name', 'branchName'],
         'neighborhood',
-      )
-      .whereIn('id', Array.from(unlockedSet));
+      ],
+      where: { id: Array.from(unlockedSet) },
+      raw: true,
+    });
     contactById = new Map(contacts.map((c) => [c.id, c]));
   }
 
@@ -203,10 +254,9 @@ async function getFeed(user, { page = 1, pageSize = 10, fresh = false } = {}) {
     return card;
   });
 
-  const totalResults = results.length; // Paginated count; for the small fixture data this is enough.
   const response = { results, page, pageSize, totalResults };
   await cache.set(cacheKey, JSON.stringify(response), CACHE_TTL_SECONDS);
   return response;
 }
 
-module.exports = { getFeed, runMatchingQuery };
+module.exports = { getFeed, runMatchingQuery, countMatchingCandidates };

@@ -5,7 +5,7 @@
  */
 const request = require('supertest');
 const { app, registerUser, addInterest, getRefs } = require('./helpers');
-const db = require('../src/db/knex');
+const db = require('./db');
 
 describe('Marketplace feed (§6.6) — /marketplace/feed', () => {
   let refs;

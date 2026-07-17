@@ -4,7 +4,7 @@
  */
 const request = require('supertest');
 const { app, loginStaff, getRefs } = require('./helpers');
-const db = require('../src/db/knex');
+const db = require('./db');
 
 describe('Admin banks (§6.9)', () => {
   it('super_admin can list banks', async () => {
