@@ -1,0 +1,165 @@
+{
+  "regions": [
+    {
+      "id": 1, "name": "Addis Ababa", "nameAm": "አዲስ አበባ",
+      "zones_subcities": [
+        { "id": 101, "name": "Akaki Kality", "nameAm": "አቃቂ ቃሊቲ" },
+        { "id": 102, "name": "Nifas Silk Lafto", "nameAm": "ንፋስ ስልክ ላፍቶ" },
+        { "id": 103, "name": "Bole", "nameAm": "ቦሌ" },
+        { "id": 104, "name": "Yeka", "nameAm": "የካ" },
+        { "id": 105, "name": "Kolfe Keranio", "nameAm": "ኮልፌ ቀራንዮ" }
+      ]
+    },
+    {
+      "id": 2, "name": "Dire Dawa", "nameAm": "ድሬ ዳዋ",
+      "zones_subcities": [
+        { "id": 201, "name": "Dire Dawa Administration", "nameAm": "የድሬ ዳዋ አስተዳደር" }
+      ]
+    },
+    {
+      "id": 3, "name": "Oromia", "nameAm": "ኦሮሚያ",
+      "zones_subcities": [
+        { "id": 301, "name": "East Shewa", "nameAm": "ምስራቅ ሸዋ" },
+        { "id": 302, "name": "West Shewa", "nameAm": "ምዕራብ ሸዋ" },
+        { "id": 303, "name": "Jimma", "nameAm": "ጅማ" },
+        { "id": 304, "name": "Sheger City", "nameAm": "ሸገር ከተማ" },
+        { "id": 305, "name": "East Hararghe", "nameAm": "ምስራቅ ሐረርጌ" },
+        { "id": 306, "name": "West Hararghe", "nameAm": "ምዕራብ ሐረርጌ" },
+        { "id": 307, "name": "Bale", "nameAm": "ባሌ" },
+        { "id": 308, "name": "Borana", "nameAm": "ቦረና" },
+        { "id": 309, "name": "Guji", "nameAm": "ጉጂ" },
+        { "id": 310, "name": "Illubabor", "nameAm": "ኢሉባቦር" },
+        { "id": 311, "name": "Kelam Welega", "nameAm": "ቀለም ወለጋ" },
+        { "id": 312, "name": "East Welega", "nameAm": "ምስራቅ ወለጋ" },
+        { "id": 313, "name": "West Welega", "nameAm": "ምዕራብ ወለጋ" },
+        { "id": 314, "name": "Arsi", "nameAm": "አርሲ" },
+        { "id": 315, "name": "West Arsi", "nameAm": "ምዕራብ አርሲ" },
+        { "id": 316, "name": "Horo Guduru Welega", "nameAm": "ሆሮ ጉዱሩ ወለጋ" },
+        { "id": 317, "name": "South West Shewa", "nameAm": "ደቡብ ምዕራብ ሸዋ" },
+        { "id": 318, "name": "North Shewa (Oromia)", "nameAm": "ሰሜን ሸዋ (ኦሮሚያ)" }
+      ]
+    },
+    {
+      "id": 4, "name": "Amhara", "nameAm": "አማራ",
+      "zones_subcities": [
+        { "id": 401, "name": "North Gondar", "nameAm": "ሰሜን ጎንደር" },
+        { "id": 402, "name": "South Gondar", "nameAm": "ደቡብ ጎንደር" },
+        { "id": 403, "name": "Bahir Dar Special Zone", "nameAm": "ባህር ዳር ልዩ ዞን" },
+        { "id": 404, "name": "West Gojjam", "nameAm": "ምዕራብ ጐጃም" },
+        { "id": 405, "name": "East Gojjam", "nameAm": "ምስራቅ ጐጃም" },
+        { "id": 406, "name": "South Wollo", "nameAm": "ደቡብ ወሎ" },
+        { "id": 407, "name": "North Wollo", "nameAm": "ሰሜን ወሎ" },
+        { "id": 408, "name": "Oromia (Amhara)", "nameAm": "ኦሮሚያ (አማራ)" },
+        { "id": 409, "name": "Wag Hemra", "nameAm": "ዋግ ሐምራ" },
+        { "id": 410, "name": "Awi", "nameAm": "አዊ" },
+        { "id": 411, "name": "North Shewa (Amhara)", "nameAm": "ሰሜን ሸዋ (አማራ)" },
+        { "id": 412, "name": "Argobba Special", "nameAm": "አርጎባ ልዩ ዞን" }
+      ]
+    },
+    {
+      "id": 5, "name": "Tigray", "nameAm": "ትግራይ",
+      "zones_subcities": [
+        { "id": 501, "name": "North Western Tigray", "nameAm": "ሰሜን ምዕራብ ትግራይ" },
+        { "id": 502, "name": "Central Tigray", "nameAm": "መካከለኛ ትግራይ" },
+        { "id": 503, "name": "Eastern Tigray", "nameAm": "ምስራቅ ትግራይ" },
+        { "id": 504, "name": "Southern Tigray", "nameAm": "ደቡብ ትግራይ" },
+        { "id": 505, "name": "Western Tigray", "nameAm": "ምዕራብ ትግራይ" },
+        { "id": 506, "name": "Mekele Special Zone", "nameAm": "መቐለ ልዩ ዞን" }
+      ]
+    },
+    {
+      "id": 6, "name": "Somali", "nameAm": "ሶማሌ",
+      "zones_subcities": [
+        { "id": 601, "name": "Fafan", "nameAm": "ፋፋን" },
+        { "id": 602, "name": "Siti", "nameAm": "ሲቲ" },
+        { "id": 603, "name": "Liben", "nameAm": "ሊባን" },
+        { "id": 604, "name": "Dollo", "nameAm": "ዶሎ" },
+        { "id": 605, "name": "Korahe", "nameAm": "ኮራሄ" },
+        { "id": 606, "name": "Shabelle", "nameAm": "ሻበሌ" },
+        { "id": 607, "name": "Erer", "nameAm": "ኤረር" },
+        { "id": 608, "name": "Afder", "nameAm": "አፍደር" },
+        { "id": 609, "name": "Dheghahbur", "nameAm": "ደጋህቡር" }
+      ]
+    },
+    {
+      "id": 7, "name": "Sidama", "nameAm": "ሲዳማ",
+      "zones_subcities": [
+        { "id": 701, "name": "Sidama Zone", "nameAm": "የሲዳማ ዞን" },
+        { "id": 702, "name": "Hawassa City Administration", "nameAm": "አዋሳ ከተማ አስተዳደር" }
+      ]
+    },
+    {
+      "id": 8, "name": "South West Ethiopia Peoples'", "nameAm": "የደቡብ ምዕራብ ኢትዮጵያ ሕዝቦች",
+      "zones_subcities": [
+        { "id": 801, "name": "Bench Sheko", "nameAm": "ቤንች ሸኮ" },
+        { "id": 802, "name": "Dawro", "nameAm": "ዳውሮ" },
+        { "id": 803, "name": "Keffa", "nameAm": "ከፋ" },
+        { "id": 804, "name": "Sheka", "nameAm": "ሸካ" },
+        { "id": 805, "name": "West Omo", "nameAm": "ምዕራብ ኦሞ" },
+        { "id": 806, "name": "Konta", "nameAm": "ኮንታ" }
+      ]
+    },
+    {
+      "id": 9, "name": "South Ethiopia", "nameAm": "የደቡብ ኢትዮጵያ",
+      "zones_subcities": [
+        { "id": 901, "name": "Gamo", "nameAm": "ጋሞ" },
+        { "id": 902, "name": "Gofa", "nameAm": "ጎፋ" },
+        { "id": 903, "name": "Wolayta", "nameAm": "ወላይታ" },
+        { "id": 904, "name": "Gedeo", "nameAm": "ጌዴኦ" },
+        { "id": 905, "name": "South Omo", "nameAm": "ደቡብ ኦሞ" },
+        { "id": 906, "name": "Amaro", "nameAm": "አማሮ" },
+        { "id": 907, "name": "Burji", "nameAm": "ቡርጂ" },
+        { "id": 908, "name": "Konso", "nameAm": "ኮንሶ" },
+        { "id": 909, "name": "Dirashe", "nameAm": "ዲራሼ" },
+        { "id": 910, "name": "Basketo", "nameAm": "ባስኬቶ" },
+        { "id": 911, "name": "Alle", "nameAm": "አሌ" }
+      ]
+    },
+    {
+      "id": 10, "name": "Central Ethiopia", "nameAm": "መካከለኛ ኢትዮጵያ",
+      "zones_subcities": [
+        { "id": 1001, "name": "Gurage", "nameAm": "ጉራጌ" },
+        { "id": 1002, "name": "Hadiya", "nameAm": "ሐዲያ" },
+        { "id": 1003, "name": "Kembata Tembaro", "nameAm": "ከምባታ ቴምባሮ" },
+        { "id": 1004, "name": "Silt'e", "nameAm": "ስልጤ" },
+        { "id": 1005, "name": "Yem", "nameAm": "የም" },
+        { "id": 1006, "name": "Halaba Special", "nameAm": "ሐላባ ልዩ ዞን" }
+      ]
+    },
+    {
+      "id": 11, "name": "Afar", "nameAm": "አፋር",
+      "zones_subcities": [
+        { "id": 1101, "name": "Awsi Rasu", "nameAm": "አውሲ ራሱ" },
+        { "id": 1102, "name": "Kilbet Rasu", "nameAm": "ክልበት ራሱ" },
+        { "id": 1103, "name": "Gabi Rasu", "nameAm": "ጋቢ ራሱ" },
+        { "id": 1104, "name": "Fanti Rasu", "nameAm": "ፋንቲ ራሱ" },
+        { "id": 1105, "name": "Harari Rasu", "nameAm": "ሐረሪ ራሱ" }
+      ]
+    },
+    {
+      "id": 12, "name": "Benishangul-Gumuz", "nameAm": "ቤንሻንጉል-ጉሙዝ",
+      "zones_subcities": [
+        { "id": 1201, "name": "Metekel", "nameAm": "ሜቴከል" },
+        { "id": 1202, "name": "Asosa", "nameAm": "አሶሳ" },
+        { "id": 1203, "name": "Kamashi", "nameAm": "ካማሺ" },
+        { "id": 1204, "name": "Mao-Komo", "nameAm": "ማኦ-ኮሞ" },
+        { "id": 1205, "name": "Paw", "nameAm": "ጳው" }
+      ]
+    },
+    {
+      "id": 13, "name": "Gambela", "nameAm": "ጋምቤላ",
+      "zones_subcities": [
+        { "id": 1301, "name": "Nuer", "nameAm": "ኑር" },
+        { "id": 1302, "name": "Anuak", "nameAm": "አኑዋክ" },
+        { "id": 1303, "name": "Mezhenger", "nameAm": "ምዠንገር" },
+        { "id": 1304, "name": "Itang Special", "nameAm": "ኢታንግ ልዩ ዞን" }
+      ]
+    },
+    {
+      "id": 14, "name": "Harari", "nameAm": "ሐረሪ",
+      "zones_subcities": [
+        { "id": 1401, "name": "Harari Region", "nameAm": "የሐረሪ ክልል" }
+      ]
+    }
+  ]
+}
