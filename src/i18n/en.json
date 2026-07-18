@@ -37,7 +37,7 @@
   "DUPLICATE_GRADE_NUMBER": "Grade number already exists.",
   "GRADE_HAS_ACTIVE_USERS": "Cannot deactivate a grade with active users.",
   "REGION_LEVEL_MATCH_WARNING": "This candidate is interested in the broader {region} region, not specifically {zone}.",
-  "INVALID_CREDENTIALS": "Invalid email or password.",
+  "INVALID_CREDENTIALS": "The email or password you entered is incorrect.",
   "ACCOUNT_DISABLED": "Account is disabled. Contact your administrator.",
   "INVALID_TOKEN": "Authentication required.",
   "INVALID_TOKEN_FOR_ROUTER": "Token is not valid for this router.",

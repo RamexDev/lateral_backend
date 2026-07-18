@@ -1,103 +1,139 @@
-# 🚀 Lateral Transfer Marketplace System
-> **Backend Design & Implementation Specification**
+# Lateral Transfer Marketplace — Backend Specification
 
----
-## 📑 Table of Contents
-- Architecture
-- Backend Modules
-- Data Model
-- Seeding
-- Matching Engine
-- API Design
-- Security
-- Deployment
-
----
-# Lateral Transfer Marketplace System — Backend Design & Implementation Specification
-
-**Derived from:** SRS v1.0 (July 15, 2026), the Ethiopian Banks & Geographic Hierarchy seed data,
-and the confirmed bot onboarding/interest-selection conversational flow
-**Stack:** Express.js (Node.js) · MySQL · Redis · BullMQ · Telegram Bot API / Mini App · Admin PWA
+**Version:** 2.0 (post-`answers.md` decisions, July 18, 2026)
+**Derived from:** SRS v1.0 (July 15, 2026), `answers.md` (decisions log), the vendor-supplied Ethiopian Banks & Geographic Hierarchy seed data, and the confirmed bot onboarding/interest-selection conversational flow.
+**Stack:** Express.js (Node.js) · MySQL 8 · Redis · BullMQ · Chapa (payments) · Telegram Bot API / Mini App · Admin PWA
 **Audience:** Backend engineers, DBAs, DevOps, technical reviewers
 
-This document translates the SRS's functional and business requirements into a concrete backend
-architecture: schema, APIs (with full request/response examples and edge cases), matching
-algorithm, job/queue design, payments, security, and deployment. Section numbers cross-reference
-the corresponding SRS requirement IDs (FR-*, BR-*, SEC-*) so reviewers can trace design decisions
-back to source requirements.
+This document is the source of truth for the current backend implementation. It reflects every decision in `answers.md` (Chapa payment integration, BullMQ worker wiring, the 10-min/30-min/7-day session timeout, the reworded `INVALID_CREDENTIALS` message, the real `.xlsx` export, the `tests/db.js` shim removal, the 111-zone geography seed, the audit-log healthcheck, and the staff refresh-token flow).
+
+---
+
+## 📑 Table of Contents
+
+1. [Architecture Overview](#1-architecture-overview)
+2. [Core Backend Modules](#2-core-backend-modules)
+3. [Data Model (MySQL)](#3-data-model-mysql)
+4. [Location Hierarchy Seeding](#4-location-hierarchy-seeding)
+5. [Matching Engine](#5-matching-engine)
+6. [API Design](#6-api-design)
+   - 6.0 Conventions
+   - 6.1 Onboarding wizard API
+   - 6.2 Auth (user JWT issuance)
+   - 6.3 Interests API
+   - 6.4 Profile API
+   - 6.5 Marketplace feed
+   - 6.6 Purchases & Chapa payment webhook
+   - 6.7 Notifications
+   - 6.8 Admin auth (login / refresh / logout)
+   - 6.9 Admin reference data & staff management
+   - 6.10 Admin user monitoring & reports
+   - 6.11 Chapa payment webhook
+7. [Redis Usage](#7-redis-usage)
+8. [Payment Integration (Chapa)](#8-payment-integration-chapa)
+9. [Notification System](#9-notification-system)
+10. [Security](#10-security)
+11. [RBAC Matrix](#11-rbac-matrix)
+12. [Non-Functional Implementation Notes](#12-non-functional-implementation-notes)
+13. [Environment Configuration](#13-environment-configuration)
+14. [Deployment Notes](#14-deployment-notes)
+15. [Localization (i18n)](#15-localization-i18n)
+16. [Known Issues & Translation Review](#16-known-issues--translation-review)
 
 ---
 
 ## 1. Architecture Overview
 
 ```
-                         ┌─────────────────────┐
-                         │   Telegram Servers   │
-                         └─────────┬───────────┘
-                    Bot updates /  │  \ WebApp initData
-                    payment events │   \
-                                   ▼    ▼
-                 ┌───────────────────────────────────┐
-                 │      Express.js API Gateway        │
-                 │  /webhooks/telegram/bot  /api/v1   │
-                 │  /admin/api/v1                      │
-                 │  (auth, RBAC, router-scope, cors)  │
-                 └──────┬───────────────┬─────────────┘
-                        │               │
-              ┌─────────▼──────┐   ┌────▼─────────┐
-              │     MySQL       │   │    Redis      │
-              │ (source of      │   │ cache / rate  │
-              │  truth)         │   │ limit / locks │
-              │                 │   │ + bot session  │
-              │                 │   │   / wizard FSM │
-              └─────────────────┘   └────┬──────────┘
-                                          │
-                                   ┌──────▼───────────┐
-                                   │  BullMQ Workers    │
-                                   │ - digest job        │
-                                   │ - broadcast job      │
-                                   │ - payment-webhook job│
-                                   └──────────────────┘
-
-              ┌───────────────────────────────┐
-              │  Admin PWA (static SPA)         │
-              │  talks to /admin/api/v1 only     │
-              └───────────────────────────────┘
+                     ┌──────────────────────┐
+                     │   Telegram Bot API    │
+                     │  (webhook + Mini App) │
+                     └──────────┬───────────┘
+                                │
+                                ▼
+                     ┌──────────────────────┐         ┌─────────────────┐
+                     │     api (Express)    │◄───────►│   MySQL 8       │
+   /api/v1/*         │  - onboarding        │         │  - 13 tables    │
+   /admin/api/v1/*   │  - marketplace       │         │  - FKs + indexes│
+                     │  - admin PWA REST    │         └─────────────────┘
+                     │  - Chapa webhook     │
+                     └──────────┬───────────┘         ┌─────────────────┐
+                                │                     │   Redis         │
+                                ├────────────────────►│  - cache        │
+                                │                     │  - BullMQ queues│
+                                ▼                     │  - rate limit   │
+                     ┌──────────────────────┐         │  - bot sessions │
+                     │  worker (BullMQ)     │◄───────►│  - refresh-token│
+                     │  - digest fan-out    │         │    lookup cache │
+                     │  - broadcast fan-out │         └─────────────────┘
+                     │  - payment-webhook   │
+                     │    post-processing   │
+                     └──────────────────────┘
+                     ┌──────────────────────┐
+                     │  scheduler (cron)    │
+                     │  - daily digest      │
+                     │    repeatable job    │
+                     └──────────────────────┘
+                                │
+                                ▼
+                     ┌──────────────────────┐
+                     │   Chapa Checkout     │
+                     │  (off-platform)      │
+                     │  - /transaction/     │
+                     │    initialize        │
+                     │  - webhook →         │
+                     │    /api/v1/webhooks/ │
+                     │    chapa             │
+                     └──────────────────────┘
 ```
 
-**Process topology (recommended):**
-1. `api` — stateless Express HTTP process(es) behind a load balancer, handles the Telegram bot
-   webhook, Mini App REST calls, and Admin PWA REST calls. Horizontally scalable.
-2. `worker` — separate Node process(es) running BullMQ consumers (digest fan-out, broadcast
-   fan-out, payment-webhook post-processing, closure-table rebuild). Scaled independently of
-   `api` since notification fan-out is bursty.
-3. `scheduler` — a lightweight cron trigger (BullMQ repeatable job or system cron) that enqueues
-   the daily digest job; kept logically separate from `worker` so a redeploy of workers doesn't
-   skip a scheduled tick.
+### Process topology (§1.1, `answers.md` §B)
 
-All three share the same MySQL and Redis instances. This satisfies the NFR requirement for
-queue-based notification fan-out rather than naive per-user loops, and lets `api` stay responsive
-under notification load.
+Three separately-deployable processes share the same MySQL + Redis instances:
+
+| Process | Entry point | Purpose |
+|---|---|---|
+| `api` | `src/server.js` (`npm start` / `npm run dev`) | Express HTTP server for bot webhook + Mini App REST + Admin PWA REST + Chapa webhook. Horizontally scalable behind a load balancer. |
+| `worker` | `src/worker.js` (`npm run worker`) | BullMQ consumers on `digest-notifications`, `broadcast-notifications`, `payment-webhook-processing`. Scaled independently of `api` since notification fan-out is bursty. |
+| `scheduler` | `src/scheduler.js` (`npm run scheduler`) | Registers the daily repeatable job on `digest-notifications` (cron from `DIGEST_SCHEDULE_CRON`, default `0 6 * * *`). Kept logically separate from `worker` so a worker redeploy doesn't skip a scheduled tick. |
+
+**Test/dev fallback:** When `NODE_ENV === 'test'` OR `REDIS_URL` is unset, the queue layer (`src/queues/index.js`) falls back to **inline synchronous execution** — `enqueue()` runs the processor body in the same call stack. This keeps the test suite self-contained (no Redis dependency) and the dev loop simple. Production deployments MUST run `worker` + `scheduler` separately.
 
 ---
 
 ## 2. Core Backend Modules
 
-| Module | Responsibility | Key SRS refs |
-|---|---|---|
-| `BotGatewayService` | Receives Telegram webhook updates, dispatches to the wizard/interest FSM, sends outgoing Telegram Bot API calls (`sendMessage`, `editMessageReplyMarkup`, `answerCallbackQuery`) | — |
-| `AuthService` | Telegram user identity (contact-share verification, OTP fallback), admin auth (JWT/session) | FR-AUTH-001…007 |
-| `OnboardingService` | Drives the registration wizard, owns the Redis-backed session/FSM state | FR-PROFILE-001…003 |
-| `LocationService` | Location tree CRUD (region/zone_subcity), closure-table maintenance | FR-LOC-001…004 |
-| `InterestService` | Multi-select interest wizard state, create/list/remove transfer interests | FR-INT-001…003 |
-| `MatchingService` | Live marketplace feed query + ranking | FR-MATCH-001…007, BR-001…004,008 |
-| `PurchaseService` | Reveal purchase orchestration, double-charge guard | FR-PUR-001…004, BR-005,006 |
-| `PaymentService` | Telegram Bot Payments integration, webhook handling | FR-PAY-001…005 |
-| `NotificationService` | Digest job, broadcast, transactional notifications | FR-NOT-001…004 |
-| `AdminService` | Reference data admin (banks, locations, grades), staff/role management, monitoring | FR-ADM-001…006 |
-| `ReportingService` | Dashboard summaries, exportable reports, user activity monitoring | FR-ADM-004…006 |
-| `RbacMiddleware` | Role-based endpoint authorization | FR-RBAC-001…003 |
-| `AuditService` | Write-through audit log for sensitive actions | SEC-006 |
+```
+src/
+├── app.js                     Express app composition (two routers: /api/v1 + /admin/api/v1)
+├── server.js                  API process boot script
+├── worker.js                  BullMQ worker process
+├── scheduler.js               Scheduler process (daily digest cron)
+├── config/index.js            Centralized env config
+├── db/
+│   ├── sequelize.js           Sequelize instance (MySQL prod / SQLite tests)
+│   ├── config.js              Per-env connection params (consumed by sequelize-cli)
+│   ├── models/                13 Sequelize models + associations
+│   ├── migrations/            10 sequelize-cli migrations
+│   ├── seeders/               4 Sequelize seeders (banks, geography, grades, super admin)
+│   └── seed_lib/              Seed JSON fixtures + closureRebuild helper
+├── queues/                    BullMQ queue layer (§7, answers.md §B)
+│   ├── index.js               Queue + worker registration; inline fallback for tests
+│   ├── registerAll.js         Registers all 3 processors (called at API/worker/scheduler boot)
+│   └── processors/            digest.js, broadcast.js, paymentWebhook.js
+├── repositories/              Data access layer (one file per table, Sequelize models)
+├── services/                  Business logic (Auth, Onboarding, Interest, Matching, Purchase, …, RefreshToken)
+├── middlewares/               auth, rbac, routerScope (SEC-011), validate, rateLimit, initData, errorHandler
+├── routes/
+│   ├── onboarding.js          Bot-wizard endpoints + /auth/issue-token + /interests/zone-options
+│   ├── user.js                Authenticated user routes (/me, /interests/me, /marketplace/feed, /purchases, …)
+│   ├── admin/                 Admin PWA routes (auth, banks, locations, grades, staff, users, notifications, reports)
+│   └── webhooks/chapa.js      Chapa payment confirmation webhook
+├── schemas/                   Zod validation schemas (onboarding, interests, profile, marketplace, admin)
+├── providers/chapa.js         Payment provider interface + Chapa implementation (§8, answers.md §1)
+├── i18n/                      en.json + am.json message catalogs (§15)
+└── utils/                     jwt, password, phone, cache, logger, response envelope, ApiError, telegramInitData
+```
 
 ---
 
@@ -105,396 +141,190 @@ under notification load.
 
 ### 3.1 Design note: location hierarchy vs. free-text branch identity
 
-The seed data (`Part 2: Geographic Hierarchy`) provides only the **shared, bank-agnostic
-administrative geography**: 14 top-level Regions/Chartered Cities and 105 Zones/Subcities/Special
-Woredas (119 nodes total). Per the confirmed registration flow, a user's precise workplace is
-captured as **free text** — branch name and neighborhood — rather than as a separate,
-admin-managed "branch" node in the location tree.
+The `locations` table is a structured two-level hierarchy (Region → Zone/Subcity), seeded from the vendor-supplied 111-zone dataset (see §4). The `users` table stores `current_location_id` (a zone FK) **plus** free-text `branch_name` and `neighborhood` — branches are too granular and change too often to model as a separate table.
 
-Consequences for the schema:
-- `locations` contains **only two levels** — `region` and `zone_subcity` — and is identical
-  across all banks (no `bank_id` column needed; it is pure shared reference data, satisfying
-  FR-LOC-002 at the geography level).
-- A user's `current_location_id` points at the most granular seeded node they picked (their
-  zone/subcity). This is the node used for hierarchy-based matching.
-- `branch_name` and `neighborhood` are descriptive free-text attributes on the `users` row —
-  shown to a buyer only after a paid reveal (SEC-010) — but are **not** used for matching. This
-  satisfies FR-PROFILE-003 ("only a branch-level location is selectable as current location") by
-  treating the zone/subcity as the matching-granularity "current location," with the literal
-  branch identity captured alongside it as text rather than a separate pre-seeded node.
-- `transfer_interests.location_id` still references `locations` generically (region or
-  zone_subcity), so a future "interest in an entire region" option needs no schema change — the
-  bot UI described below simply only exposes zone/subcity-level checkboxes today.
+The closure table `location_ancestors` is the workhorse for the matching engine (§5): it allows a single `JOIN` to answer "does this candidate's interest closure-match the viewer's current location?" without recursive CTEs (portable across MySQL 8 and SQLite).
 
-### 3.2 Schema (DDL)
+### 3.2 Schema (DDL — 13 tables)
 
-```sql
--- ─────────────────────────────────────────────────────────────
--- Reference data
--- ─────────────────────────────────────────────────────────────
-CREATE TABLE banks (
-  id                INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  name              VARCHAR(150) NOT NULL,
-  name_am           VARCHAR(150) NOT NULL,          -- Amharic display name (robust from day 1)
-  nickname          VARCHAR(30)  NOT NULL UNIQUE,
-  swift_code        VARCHAR(11)  NULL,
-  year_established  SMALLINT     NULL,
-  is_active         BOOLEAN      NOT NULL DEFAULT TRUE,
-  created_at        TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at        TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+| # | Table | Purpose | Key constraints |
+|---|---|---|---|
+| 1 | `banks` | Bank directory (31 rows seeded) | `nickname UNIQUE`, `name_am NOT NULL` |
+| 2 | `locations` | Region + zone/subcity hierarchy (125 nodes seeded: 14 regions + 111 zones) | self-FK `parent_id → locations.id`, `name_am NOT NULL` |
+| 3 | `location_ancestors` | Closure table (236 rows after rebuild: 125 self-rows + 111 zone→region edges) | composite PK `(ancestor_id, descendant_id)`, `depth` column |
+| 4 | `grades` | Shared 1–18 grade matrix across all banks | `grade_number UNIQUE`, all `_am` columns NOT NULL |
+| 5 | `roles` | RBAC roles: `super_admin`, `platform_admin`, `finance_officer`, `support_officer` | `name UNIQUE` |
+| 6 | `staff` | Admin PWA users (RBAC-scoped) | `email UNIQUE`, FK `role_id → roles.id` |
+| 7 | `staff_refresh_tokens` | Backing storage for 7-day staff refresh tokens (answers.md §D) | `token_hash UNIQUE` (SHA-256), FK `staff_id → staff.id` ON DELETE CASCADE |
+| 8 | `users` | Registered bank employees | `telegram_id UNIQUE`, `uq_phone_bank (phone_number, bank_id)`, FKs to banks/locations/grades |
+| 9 | `transfer_interests` | "I want to move to zone X" declarations | `uq_user_location (user_id, location_id)`, FKs to users/locations |
+| 10 | `purchases` | Reveal purchase records (one per buyer/target pair) | `uq_buyer_target (buyer_id, target_user_id)` — BR-006 |
+| 11 | `payments` | Chapa payment records | `provider_charge_id UNIQUE` — FR-PAY-002 idempotency key |
+| 12 | `notifications` | Queued/sent notifications per user | FK `user_id → users.id` |
+| 13 | `audit_logs` | SEC-006 audit trail (every sensitive action) | polymorphic `actor_type`/`actor_id` + `entity_type`/`entity_id` |
 
-CREATE TABLE locations (
-  id           BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  parent_id    BIGINT UNSIGNED NULL,
-  name         VARCHAR(150) NOT NULL,
-  name_am      VARCHAR(150) NOT NULL,          -- Amharic display name (robust from day 1)
-  level_type   ENUM('region','zone_subcity') NOT NULL,
-  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT fk_loc_parent FOREIGN KEY (parent_id) REFERENCES locations(id),
-  INDEX idx_loc_parent (parent_id),
-  INDEX idx_loc_level (level_type)
-);
+#### Column reference — key tables
 
--- Precomputed transitive closure over `locations` (FR-LOC-003).
--- depth = 0 rows are self-references; depth > 0 rows are true ancestors.
-CREATE TABLE location_ancestors (
-  ancestor_id   BIGINT UNSIGNED NOT NULL,
-  descendant_id BIGINT UNSIGNED NOT NULL,
-  depth         INT NOT NULL,
-  PRIMARY KEY (ancestor_id, descendant_id),
-  INDEX idx_la_descendant (descendant_id),
-  CONSTRAINT fk_la_ancestor   FOREIGN KEY (ancestor_id)   REFERENCES locations(id),
-  CONSTRAINT fk_la_descendant FOREIGN KEY (descendant_id) REFERENCES locations(id)
-);
+**`users`** (registered bank employees):
 
--- Shared, industry-standard grade matrix (Ethiopian Banking Grade Matrix), seeded once and
--- shared across all banks — same model as the shared `locations` geography. Not bank-scoped:
--- every bank uses the same 1–18 rank scale, which is what makes grade-adjacency matching
--- (FR-MATCH-004, BR-003) consistent across banks rather than comparing incompatible per-bank
--- scales.
-CREATE TABLE grades (
-  id                   INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  grade_number         TINYINT UNSIGNED NOT NULL UNIQUE, -- 1–18, shared across all banks
-  band_label           VARCHAR(40)  NOT NULL,            -- e.g. "Grades 6–9"
-  band_label_am        VARCHAR(60)  NOT NULL,            -- Amharic (robust from day 1)
-  tier_classification  VARCHAR(60)  NOT NULL,            -- e.g. "Junior Professional"
-  tier_classification_am VARCHAR(80)  NOT NULL,          -- Amharic (robust from day 1)
-  typical_roles        VARCHAR(255) NOT NULL,            -- e.g. "CSO I, Junior IT, Junior Auditor"
-  typical_roles_am     VARCHAR(255) NOT NULL,            -- Amharic (robust from day 1)
-  rank_order           INT NOT NULL,                     -- = grade_number; kept as its own column
-                                                            -- so the matching query (Section 5)
-                                                            -- needs no rewrite if grading logic
-                                                            -- ever diverges from the raw number
-  is_active            BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+| Column | Type | Notes |
+|---|---|---|
+| `id` | BIGINT UNSIGNED PK AUTO_INCREMENT | |
+| `telegram_id` | BIGINT UNSIGNED UNIQUE NOT NULL | Telegram user ID |
+| `telegram_username` | VARCHAR(64) NULL | Optional; used in reveal if present |
+| `phone_number` | VARCHAR(20) NOT NULL | E.164-normalized |
+| `phone_verified_at` | DATETIME NULL | Set when contact-share verified |
+| `bank_id` | INT UNSIGNED NOT NULL | FK → banks.id |
+| `current_location_id` | BIGINT UNSIGNED NOT NULL | FK → locations.id (zone_subcity) |
+| `branch_name` | VARCHAR(150) NOT NULL | Free text |
+| `neighborhood` | VARCHAR(150) NULL | Free text, optional |
+| `grade_id` | INT UNSIGNED NOT NULL | FK → grades.id |
+| `preferred_language` | ENUM('en','am') NOT NULL DEFAULT 'en' | |
+| `is_active` | BOOLEAN NOT NULL DEFAULT TRUE | |
+| `last_digest_at` | DATETIME NULL | Updated by daily digest job |
+| `last_activity_at` | DATETIME NULL | Updated on authenticated requests |
+| `created_at`, `updated_at` | DATETIME | Underscored timestamps |
 
--- ─────────────────────────────────────────────────────────────
--- Core domain
--- ─────────────────────────────────────────────────────────────
-CREATE TABLE users (
-  id                   BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  telegram_id          BIGINT UNSIGNED NOT NULL UNIQUE,
-  telegram_username    VARCHAR(64) NULL,          -- nullable: not every Telegram user has one
-  phone_number         VARCHAR(20) NOT NULL,
-  phone_verified_at    TIMESTAMP NULL,
-  bank_id              INT UNSIGNED NOT NULL,
-  current_location_id  BIGINT UNSIGNED NOT NULL,  -- references locations.level_type='zone_subcity'
-  branch_name          VARCHAR(150) NOT NULL,     -- free text, e.g. "Adama Main Branch"
-  neighborhood         VARCHAR(150) NULL,         -- free text, e.g. "Bole Road, near Adama Stadium"
-  grade_id             INT UNSIGNED NOT NULL,
-  preferred_language   ENUM('en','am') NOT NULL DEFAULT 'en',
-  is_active            BOOLEAN NOT NULL DEFAULT TRUE,
-  last_digest_at       TIMESTAMP NULL,            -- updated by the digest worker after each user's digest is sent
-  last_activity_at     TIMESTAMP NULL,            -- updated on feed view, purchase, interest change (best-effort, throttled)
-  created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT fk_user_bank     FOREIGN KEY (bank_id) REFERENCES banks(id),
-  CONSTRAINT fk_user_location FOREIGN KEY (current_location_id) REFERENCES locations(id),
-  CONSTRAINT fk_user_grade    FOREIGN KEY (grade_id) REFERENCES grades(id),
-  UNIQUE KEY uq_phone_bank (phone_number, bank_id),  -- FR-AUTH-003 dup guard
-  INDEX idx_user_bank_location (bank_id, current_location_id),
-  INDEX idx_user_activity (is_active, last_activity_at)
-);
+**`payments`** (Chapa payment records):
 
-CREATE TABLE transfer_interests (
-  id           BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  user_id      BIGINT UNSIGNED NOT NULL,
-  location_id  BIGINT UNSIGNED NOT NULL,          -- zone_subcity today; region supported by schema
-  created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_ti_user     FOREIGN KEY (user_id) REFERENCES users(id),
-  CONSTRAINT fk_ti_location FOREIGN KEY (location_id) REFERENCES locations(id),
-  UNIQUE KEY uq_user_location (user_id, location_id),  -- idempotent re-confirm, no duplicate rows
-  INDEX idx_ti_location (location_id),
-  INDEX idx_ti_user (user_id),
-  INDEX idx_ti_created (created_at)
-);
+| Column | Type | Notes |
+|---|---|---|
+| `id` | BIGINT UNSIGNED PK AUTO_INCREMENT | |
+| `purchase_id` | BIGINT UNSIGNED NULL | FK → purchases.id ON DELETE SET NULL |
+| `provider_charge_id` | VARCHAR(100) UNIQUE NULL | **Idempotency key (FR-PAY-002).** For Chapa, this is the `tx_ref` (format: `purchase:<purchaseId>`). Originally `telegram_charge_id`; renamed when the default provider switched to Chapa. |
+| `provider` | VARCHAR(30) NOT NULL DEFAULT 'chapa' | Provider-agnostic |
+| `amount` | DECIMAL(12,2) NOT NULL | ETB amount |
+| `currency` | VARCHAR(10) NOT NULL | ISO 4217 |
+| `status` | ENUM('pending','completed','failed','refunded') NOT NULL DEFAULT 'pending' | |
+| `raw_payload` | JSON NULL | Full Chapa webhook `data` object |
+| `created_at`, `updated_at` | DATETIME | |
 
-CREATE TABLE purchases (
-  id                   BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  buyer_id             BIGINT UNSIGNED NOT NULL,
-  target_user_id       BIGINT UNSIGNED NOT NULL,
-  matched_interest_id  BIGINT UNSIGNED NULL,      -- the transfer_interests row that produced the match, if still present
-  revealed_fields      JSON NOT NULL,             -- e.g. {"username":true,"phone":true,"branchName":true,"neighborhood":true}
-  payment_id           BIGINT UNSIGNED NULL,
-  created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_pur_buyer  FOREIGN KEY (buyer_id) REFERENCES users(id),
-  CONSTRAINT fk_pur_target FOREIGN KEY (target_user_id) REFERENCES users(id),
-  UNIQUE KEY uq_buyer_target (buyer_id, target_user_id)   -- BR-006: never charge twice
-);
+**`staff_refresh_tokens`** (answers.md §D):
 
-CREATE TABLE payments (
-  id                  BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  purchase_id         BIGINT UNSIGNED NULL,
-  telegram_charge_id  VARCHAR(100) NULL UNIQUE,   -- idempotency key (FR-PAY-002)
-  provider             VARCHAR(30) NOT NULL DEFAULT 'telegram_stars',
-  amount               DECIMAL(12,2) NOT NULL,
-  currency             VARCHAR(10) NOT NULL,
-  status               ENUM('pending','completed','failed','refunded') NOT NULL DEFAULT 'pending',
-  raw_payload           JSON NULL,
-  created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT fk_pay_purchase FOREIGN KEY (purchase_id) REFERENCES purchases(id)
-);
+| Column | Type | Notes |
+|---|---|---|
+| `id` | BIGINT UNSIGNED PK AUTO_INCREMENT | |
+| `staff_id` | BIGINT UNSIGNED NOT NULL | FK → staff.id ON DELETE CASCADE |
+| `token_hash` | CHAR(64) UNIQUE NOT NULL | SHA-256 hex of the raw refresh token |
+| `expires_at` | DATETIME NOT NULL | Default: 7 days from issue |
+| `revoked_at` | DATETIME NULL | NULL = active; non-NULL = revoked (logout, password change, staff deactivation, or rotation) |
+| `created_at` | DATETIME | |
 
-CREATE TABLE notifications (
-  id          BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  user_id     BIGINT UNSIGNED NOT NULL,
-  type        ENUM('registration','digest','payment_confirmation','broadcast') NOT NULL,
-  channel     ENUM('telegram','email','sms') NOT NULL DEFAULT 'telegram',
-  payload     JSON NOT NULL,
-  status      ENUM('queued','sent','failed') NOT NULL DEFAULT 'queued',
-  sent_at     TIMESTAMP NULL,
-  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id),
-  INDEX idx_notif_user (user_id, created_at)
-);
-
--- ─────────────────────────────────────────────────────────────
--- Staff / RBAC
--- ─────────────────────────────────────────────────────────────
-CREATE TABLE roles (
-  id    INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  name  VARCHAR(50) NOT NULL UNIQUE   -- super_admin | platform_admin | finance_officer | support_officer
-);
-
-CREATE TABLE staff (
-  id                 BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  full_name          VARCHAR(150) NOT NULL,
-  email              VARCHAR(150) NOT NULL UNIQUE,
-  password_hash      VARCHAR(255) NOT NULL,
-  role_id            INT UNSIGNED NOT NULL,
-  preferred_language ENUM('en','am') NOT NULL DEFAULT 'en', -- Section 16.3: Admin PWA locale for staff
-  is_active          BOOLEAN NOT NULL DEFAULT TRUE,
-  last_login_at  TIMESTAMP NULL,
-  created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_staff_role FOREIGN KEY (role_id) REFERENCES roles(id)
-);
-
-CREATE TABLE audit_logs (
-  id           BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  actor_type   ENUM('user','staff','system') NOT NULL,
-  actor_id     BIGINT UNSIGNED NULL,
-  action       VARCHAR(100) NOT NULL,             -- e.g. 'purchase.reveal', 'admin.location.update'
-  entity_type  VARCHAR(50) NOT NULL,
-  entity_id    BIGINT UNSIGNED NULL,
-  metadata     JSON NULL,
-  ip_address   VARCHAR(45) NULL,
-  created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_audit_entity (entity_type, entity_id),
-  INDEX idx_audit_actor (actor_type, actor_id)
-);
-```
+Indexes: `idx_staff_refresh_tokens_staff (staff_id)`, `idx_staff_refresh_tokens_expires (expires_at)`.
 
 ### 3.3 Key relationships recap
-- One `bank` → many `users`. Location geography and the grade matrix are both shared across all
-  banks (no `bank_id` on `locations` or `grades`). Adding a bank impacts only the `banks` table.
-- `locations` self-references via `parent_id` (region → zone_subcity); `location_ancestors` is
-  the flattened closure.
-- One `user` → exactly one `current_location_id` (a zone_subcity) plus free-text
-  `branch_name`/`neighborhood`, and one `grade_id`.
-- One `user` → many `transfer_interests`.
-- One `user` (buyer) → many `purchases`; each `purchase` targets exactly one other `user`.
-- `purchases.payment_id` links to the confirming `payments` row.
+
+```
+banks 1───N users
+grades 1───N users
+locations 1───N users (current_location_id → zone_subcity)
+locations 1───N locations (parent_id: region → zone_subcity)
+location_ancestors N───N locations (closure table)
+users 1───N transfer_interests
+locations 1───N transfer_interests
+users 1───N purchases (as buyer)
+users 1───N purchases (as target_user_id)
+purchases 1───1 payments (optional — payment_id FK on purchases)
+users 1───N notifications
+roles 1───N staff
+staff 1───N staff_refresh_tokens
+```
 
 ---
 
 ## 4. Location Hierarchy Seeding
 
 ### 4.1 Seeding the shared geography
-Load the 31 banks and 119 shared administrative nodes from the provided seed JSON directly into
-`banks` and `locations`. The seed JSON must contain both English and Amharic names. A one-time Node script:
 
-```js
-// scripts/seed-geography.js
-async function seedGeography(db, seedJson) {
-  const idMap = new Map(); // seedId -> real inserted id
+The seed data lives in `src/db/seed_lib/seed-data.geography.json`. It is the **vendor-supplied 111-zone dataset** (per `answers.md` §E), replacing the prior 91-zone seed wholesale. Counts:
 
-  for (const region of seedJson.regions) {
-    const [regionRow] = await db.query(
-      `INSERT INTO locations (parent_id, name, name_am, level_type) 
-       VALUES (NULL, ?, ?, 'region')`,
-      [region.name, region.nameAm]
-    );
-    idMap.set(region.id, regionRow.insertId);
+| Metric | Value |
+|---|---|
+| Regions / Chartered Cities | 14 |
+| Zones / Subcities / Special Woredas | 111 |
+| Total geographic nodes | 125 |
 
-    for (const child of region.zones_subcities) {
-      const [childRow] = await db.query(
-        `INSERT INTO locations (parent_id, name, name_am, level_type) 
-         VALUES (?, ?, ?, 'zone_subcity')`,
-        [idMap.get(region.id), child.name, child.nameAm]
-      );
-      idMap.set(child.id, childRow.insertId);
-    }
-  }
-  return idMap;
-}
-```
+The seeder (`src/db/seeders/20240101000002-geography.js`) is idempotent: regions upsert by `(name, level_type='region', parent_id IS NULL)`; zones upsert by `(name, parent_id, level_type='zone_subcity')`. Re-running `npm run seed` is safe.
 
-Banks load 1:1 from `seedJson.banks` into the `banks` table (`nickname`, `swift_code`,
-`year_established`, `name_am` map directly; `status: "Active"` → `is_active = true`). No per-bank branch
-seeding step is needed — a user's exact branch is captured as free text at registration time
-(Section 6.3).
+After seeding, `src/db/seed_lib/closureRebuild.js` rebuilds the `location_ancestors` closure table via an application-level walk (portable across MySQL 8 and SQLite — no `WITH RECURSIVE` dependency, per spec §4.2's fallback allowance).
 
 ### 4.2 Closure table maintenance (FR-LOC-003)
-Rebuild `location_ancestors` whenever a location is inserted, moved, or deactivated. Given the
-fixed, small size of the shared geography (119 nodes, rarely changed post-launch), a full rebuild
-after each admin write is simplest and fast enough.
 
-```sql
-TRUNCATE TABLE location_ancestors;
+`location_ancestors` has 236 rows after the seed:
+- 125 self-rows (`depth = 0`) — every location is its own ancestor at depth 0
+- 111 zone→region rows (`depth = 1`) — each zone's parent region is an ancestor at depth 1
 
-INSERT INTO location_ancestors (ancestor_id, descendant_id, depth)
-WITH RECURSIVE chain (descendant_id, ancestor_id, depth) AS (
-  SELECT id, id, 0 FROM locations                       -- self rows
-  UNION ALL
-  SELECT c.descendant_id, l.parent_id, c.depth + 1
-  FROM chain c
-  JOIN locations l ON l.id = c.ancestor_id
-  WHERE l.parent_id IS NOT NULL
-)
-SELECT descendant_id, ancestor_id, depth FROM chain;
-```
-(MySQL 8+ supports `WITH RECURSIVE`; on MySQL 5.7 do this rebuild in application code instead —
-walk each node's `parent_id` chain and batch-insert the closure rows.)
+The matching engine's `JOIN location_ancestors la ON la.ancestor_id = ti.location_id AND la.descendant_id = <viewer's current_location_id>` is O(1) per row regardless of hierarchy depth.
+
+When an admin mutates the location tree (`POST/PATCH /admin/api/v1/locations`), `locationService` rebuilds the closure table synchronously (debounced in prod — the table is small at 125 nodes).
 
 ### 4.3 Seeding the grade matrix
 
-Load the 18 shared grade rows from `grades-seed.json` (Ethiopian Banking Grade Matrix) directly
-into `grades`. The seed JSON must contain both English and Amharic strings for all fields. 
-One-time, idempotent on re-run (upsert by `grade_number`):
+`src/db/seeders/20240101000003-grades.js` populates 18 grades (1–18) shared across all banks (per `answers.md` §5 — shared, industry-standard matrix, not per-bank). Each grade row has:
 
-```js
-// scripts/seed-grades.js
-async function seedGrades(db, gradesSeedJson) {
-  for (const g of gradesSeedJson.grades) {
-    await db.query(
-      `INSERT INTO grades (grade_number, band_label, band_label_am, tier_classification, tier_classification_am, typical_roles, typical_roles_am, rank_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         band_label = VALUES(band_label),
-         band_label_am = VALUES(band_label_am),
-         tier_classification = VALUES(tier_classification),
-         tier_classification_am = VALUES(tier_classification_am),
-         typical_roles = VALUES(typical_roles),
-         typical_roles_am = VALUES(typical_roles_am),
-         rank_order = VALUES(rank_order)`,
-      [g.gradeNumber, g.bandLabel, g.bandLabelAm, g.tierClassification, g.tierClassificationAm, g.typicalRoles, g.typicalRolesAm, g.gradeNumber]
-    );
-  }
-}
-```
+- `grade_number` (1–18)
+- `band_label` + `band_label_am` (e.g. "Junior", "Mid", "Senior", "Director")
+- `tier_classification` + `tier_classification_am`
+- `typical_roles` + `typical_roles_am`
+- `rank_order` (default = grade_number; used by BR-003 grade adjacency)
+- `is_active` boolean
 
-No per-bank grade seeding step is needed — unlike branch identity (free text per user), grade is
-shared, standardized reference data across the industry.
+### 4.4 Seeding the banks
+
+`src/db/seeders/20240101000001-banks.js` populates 31 Ethiopian commercial banks (per `answers.md` §F — matches spec). Each row has English `name` + Amharic `name_am`, a stable `nickname` (e.g. `cbe`, `awash`, `dashen`), optional `swift_code` and `year_established`.
+
+### 4.5 Super-admin bootstrap
+
+`src/db/seeders/20240101000004-super-admin.js` creates the first staff account on first run. Credentials come from env vars (defaults shown):
+
+- `SUPER_ADMIN_EMAIL` = `superadmin@lateral.local`
+- `SUPER_ADMIN_PASSWORD` = `ChangeMe123!`
+- `SUPER_ADMIN_NAME` = `Super Admin`
+
+Idempotent on `email` — re-running the seeder won't reset the password on an existing account.
 
 ---
 
-## 5. Matching Engine (FR-MATCH-001…007, BR-001…004,008)
+## 5. Matching Engine (FR-MATCH-001…007, BR-001…004, BR-008)
 
-The feed is a **live query, never persisted** (BR-008).
+### 5.1 Eligibility predicate
 
-**Eligibility is unchanged and strictly one-directional (BR-002):** a candidate only ever appears
-because *their* interest matches *my* current branch — this is the one thing verifiable from data
-both people entered themselves, and it's what keeps the marketplace honest (a candidate can never
-appear solely because they happen to sit where I want to go, with zero interest in coming to me —
-that would be selling a lead that isn't actually one).
+A candidate appears in the viewer's feed if **all** of the following are true:
 
-**Ranking adds a mutuality boost layered on top (extends FR-MATCH-005, confirmed in design
-review — not in SRS v1.0 text, flagged here for traceability):** among candidates who already qualify, ones
-who are *also* currently sitting at a location I've expressed interest in are genuine two-way swap
-opportunities and rank above one-directional leads. This is computed with a correlated `EXISTS`
-against my own interests and never loosens the eligibility `WHERE` clause above — it only affects
-`ORDER BY`. Like the primary match, it's evaluated on `current_location_id` (structured
-zone/subcity) only, never on free-text `branch_name`/`neighborhood`.
+1. **Same bank** (BR-001): `candidate.bank_id = viewer.bank_id`
+2. **One-directional interest** (BR-002): the candidate has a `transfer_interests` row whose `location_id` closure-matches the viewer's `current_location_id`:
+   ```
+   EXISTS (
+     SELECT 1 FROM transfer_interests ti
+     JOIN location_ancestors la
+       ON la.ancestor_id   = ti.location_id
+      AND la.descendant_id = viewer.current_location_id
+     WHERE ti.user_id = candidate.id
+   )
+   ```
+3. **Grade adjacency** (BR-003): `ABS(candidate.rank_order - viewer.rank_order) <= DEFAULT_GRADE_ADJACENCY_RANGE` (default ±1).
+4. **Not self** (BR-004): `candidate.id != viewer.id`
+5. **Active** (BR-008): `candidate.is_active = 1`
 
-```sql
-SELECT
-  ti.user_id             AS candidate_user_id,
-  g2.name                 AS candidate_grade,
-  ti.location_id            AS matched_location_id,
-  l.name                     AS matched_location_name,
-  l.level_type                 AS matched_location_level,
-  la.depth                       AS specificity_depth,   -- 0 = exact zone/subcity match, higher = broader (region)
-  ti.created_at                    AS interest_created_at,
-  EXISTS (                                                 -- mutuality boost: am I interested in
-    SELECT 1 FROM transfer_interests my_ti                 -- somewhere the candidate currently sits?
-    JOIN location_ancestors my_la
-      ON my_la.ancestor_id = my_ti.location_id
-     AND my_la.descendant_id = u2.current_location_id
-    WHERE my_ti.user_id = :requestingUserId
-  )                                 AS is_mutual_match
-FROM transfer_interests ti
-JOIN users  u2 ON u2.id = ti.user_id
-JOIN grades g2 ON g2.id = u2.grade_id
-JOIN location_ancestors la
-     ON la.ancestor_id   = ti.location_id
-    AND la.descendant_id = :requestingUserLocationId          -- BR-002: interest location must be
-                                                                 -- ancestor-of-or-equal-to my zone/subcity
-JOIN locations l ON l.id = ti.location_id
-WHERE u2.bank_id  = :requestingUserBankId                     -- BR-001: same bank only
-  AND u2.id       != :requestingUserId
-  AND u2.is_active = TRUE
-  AND ABS(g2.rank_order - :requestingUserRankOrder) <= :adjacencyRange  -- BR-003
-ORDER BY is_mutual_match DESC, la.depth ASC, ti.created_at DESC
-LIMIT :pageSize OFFSET :offset;
-```
+### 5.2 Ranking
 
-**Notes:**
-- `la.depth = 0` covers the "equal to" case in BR-002 because a location is its own ancestor at
-  depth 0 in the closure table.
-- Ranking (FR-MATCH-005) is now two-tier: `is_mutual_match DESC` first, then `la.depth ASC` (geographic
-  specificity) within each tier, then recency.
-- `is_mutual_match` is safe to expose on unpurchased cards — it's a boolean signal, not identity —
-  so buyers can see *why* a lead is worth paying for before they pay (FR-MATCH-006 still hides
-  `telegram_username`, `phone_number`, `branch_name`, `neighborhood`).
-- **`matchedLocation`'s actual name is always disclosed pre-purchase, at whatever specificity the
-  match was made** — region name for a region-level interest, zone/subcity name for a zone-level
-  one. This is a firm rule, not an incidental default: knowing *which* region or zone someone
-  wants isn't identifying on its own, and withholding it (e.g. showing only "somewhere nearby"
-  for region-level matches while naming the zone for precise ones) would be an inconsistent,
-  confusing product decision. Full transparency on match facts, privacy only on identity —
-  consistent with the "don't sell false info" principle behind the mutuality boost above.
-- **Region-level matches (`matched_location_level = 'region'`) get an explicit warning at the API
-  layer**, computed from the already-selected `l.level_type`, not a new SQL condition:
-  `matchWarning: "{candidateGrade's interest} is interested in the broader {regionName} region,
-  not specifically {viewer's zoneName}."` (localized en/am). `null` for zone/subcity-level
-  matches. This keeps a candidate visible and honestly labeled rather than either hiding them or
-  letting a buyer mistake a broad interest for a precise one.
-- `adjacencyRange` is a configurable admin setting; default suggestion ±1 rank.
-- Feed cards must **not** include `telegram_username`, `phone_number`, `branch_name`, or
-  `neighborhood` for unpurchased entries (FR-MATCH-006) — the API layer selects only grade,
-  matched location, specificity, `is_mutual_match`, and `matchWarning` until a `purchases` row
-  exists for `(requestingUserId, candidate_user_id)`.
+Results are ordered by `is_mutual_match DESC, la.depth ASC, ti.created_at DESC`:
 
-### 5.1 Feed caching
-Cache the feed response in Redis for a short TTL (30–60s) keyed by
-`feed:{bankId}:{userId}:{locationId}:{gradeAdjacency}:{page}`, bypassed by the user-triggered
-`?fresh=true` refresh (FR-MATCH-007).
+1. **Mutuality boost** (FR-MATCH-005): candidates who *also* currently sit somewhere the viewer has expressed interest in rank first.
+2. **Geographic specificity**: deeper matches (zone-level, `la.depth = 0`) rank above broader matches (region-level, `la.depth = 1`).
+3. **Recency**: newer interests rank above older ones at the same specificity.
+
+### 5.3 Feed caching
+
+The feed is cached in Redis for 30s (keyed by `feed:{bankId}:{userId}:{locationId}:{adjacencyRange}:{page}`). `?fresh=true` bypasses the cache (FR-MATCH-007) — used by the bot's "refresh" button.
+
+### 5.4 SEC-010 contact hiding
+
+Until a `purchases` row exists for `(buyer=viewer, target=candidate)` with a `completed` payment, the candidate's contact fields (`telegramUsername`, `phone`, `branchName`, `neighborhood`) are omitted from the feed card. The `unlocked` boolean on each card tells the client whether the `contact` object is populated.
+
+### 5.5 True total count
+
+`totalResults` is a real `COUNT(*)` running the same predicate (per `answers.md` §C) — not the page-size-as-total from the pre-refactor code. This is what a real pagination UI needs.
 
 ---
 
@@ -502,146 +332,93 @@ Cache the feed response in Redis for a short TTL (30–60s) keyed by
 
 ### 6.0 Conventions
 
-- **Base URL:** `https://api.<domain>`
-- **Auth:**
-  - Bot webhook (`POST /webhooks/telegram/bot`) — authenticated via Telegram's
-    `X-Telegram-Bot-Api-Secret-Token` header (SEC-007), set via `setWebhook`.
-  - Onboarding/interest wizard endpoints (Section 6.3–6.4) — called server-side by
-    `BotGatewayService` as trusted internal calls, **or** directly by the Mini App with a
-    `X-Telegram-Init-Data` header validated per SEC-003.
-  - All other end-user endpoints — `Authorization: Bearer <session-jwt>` issued after
-    onboarding completes.
-  - Admin PWA endpoints (`/admin/api/v1/*`) — `Authorization: Bearer <staff-jwt>`, RBAC-checked.
-- **Response envelope (success):**
-  ```json
-  { "success": true, "data": { }, "message": "optional human-readable note" }
-  ```
-- **Response envelope (error):**
-  ```json
-  { "success": false, "error": { "code": "MACHINE_READABLE_CODE", "message": "human-readable" } }
-  ```
-- **HTTP status codes:** `200` success, `400` validation error, `401` unauthenticated,
-  `403` forbidden/RBAC, `404` not found, `409` conflict (e.g. duplicate purchase), `422`
-  business-rule violation, `500` server error.
-- **Route separation, CORS & Router-Token Binding (SEC-011):** two independent Express routers, mounted at distinct prefixes with distinct `cors()` configs — never a single shared router:
-  - `/api/v1/*` — bot webhook + Mini App traffic. `cors({ origin: process.env.MINIAPP_ORIGIN })`.
-  - `/admin/api/v1/*` — Admin PWA traffic only. `cors({ origin: process.env.ADMIN_PWA_ORIGIN })`.
-  A browser request from the Admin PWA's origin to `/api/v1/*` (or vice versa) fails CORS preflight
-  and never reaches the handler. CORS alone only constrains browsers, though — see SEC-011
-  (Section 10) for the server-side check that also blocks a stolen token replayed via a
-  non-browser client.
+#### Base URLs
 
-**Router-Scope Enforcement Implementation Sketch:**
-```js
-// /api/v1 router — rejects staff tokens
-app.use('/api/v1', (req, res, next) => {
-  if (req.auth?.scope === 'staff') {
-    return res.status(401).json({ success: false,
-      error: { code: 'INVALID_TOKEN_FOR_ROUTER',
-               message: 'Staff tokens cannot access Mini App endpoints.' }});
-  }
-  next();
-});
+| Router | Base URL | CORS origin | Token scope |
+|---|---|---|---|
+| Bot webhook + Mini App | `/api/v1` | `MINIAPP_ORIGIN` | `scope: 'user'` JWT |
+| Admin PWA | `/admin/api/v1` | `ADMIN_PWA_ORIGIN` | `scope: 'staff'` JWT |
+| Chapa webhook | `/api/v1/webhooks/chapa` | `MINIAPP_ORIGIN` | none (HMAC-signed) |
 
-// /admin/api/v1 router — rejects user tokens
-app.use('/admin/api/v1', (req, res, next) => {
-  if (req.auth?.scope === 'user') {
-    return res.status(401).json({ success: false,
-      error: { code: 'INVALID_TOKEN_FOR_ROUTER',
-               message: 'User tokens cannot access admin endpoints.' }});
-  }
-  next();
-});
-```
-Issue staff JWTs with `{ scope: 'staff', roleId }` and user JWTs with `{ scope: 'user', userId }` so the check is a single claim comparison, not a DB lookup.
+Router-token binding (SEC-011): a `scope: 'user'` JWT is rejected on `/admin/api/v1/*` and vice versa — server-side, independent of CORS.
 
-### 6.1 Telegram update → internal call mapping
+#### Standard response envelope
 
-| Telegram update | Internal call | Bot's outgoing action |
-|---|---|---|
-| `message.text = "/start"` | `POST /onboarding/start` | `sendMessage` with language inline keyboard |
-| `callback_query.data = "lang:am"` | `POST /onboarding/language` | `editMessageText` with contact-share prompt + reply keyboard (`request_contact: true`) |
-| `message.contact` | `POST /onboarding/contact` | `sendMessage` with bank inline keyboard (paginated) |
-| `callback_query.data = "bank:1"` | `POST /onboarding/bank` | `editMessageText` with region inline keyboard |
-| `callback_query.data = "region:16"` | `POST /onboarding/region` | `editMessageText` with zone/subcity inline keyboard + "🔄 Change region" |
-| `callback_query.data = "zone:25"` | `POST /onboarding/zone` | `editMessageText` asking for branch name (free text) |
-| `message.text = "<branch name>"` | (buffered in session) | `sendMessage` asking for neighborhood |
-| `message.text = "<neighborhood>"` | `POST /onboarding/branch-details` | `sendMessage` with grade-band inline keyboard (8 bands) |
-| `callback_query.data = "gradeband:6-9"` | `POST /onboarding/grade-band` | `editMessageText` with grade-number inline keyboard for that band |
-| `callback_query.data = "grade:7"` | `POST /onboarding/grade` | `sendMessage` profile summary, then `GET /interests/zone-options` → interest checkboxes |
-| `callback_query.data = "int:toggle:26"` | `POST /interests/toggle` | `editMessageReplyMarkup` — same message, checkbox re-rendered ✅/⬜ |
-| `callback_query.data = "int:change_region"` | (client-side prompt) → `region` picker → `POST /interests/change-region` | `editMessageText` with new region's zone checkboxes |
-| `callback_query.data = "int:confirm"` | `POST /interests/confirm` | `sendMessage` confirmation + marketplace hint |
+Every endpoint returns one of:
 
-### 6.2 Example Telegram webhook payloads
-
-**`/start`**
 ```json
-POST /webhooks/telegram/bot
+// Success
 {
-  "update_id": 900001,
-  "message": {
-    "message_id": 1,
-    "from": { "id": 123456789, "username": "abebe_kebede", "is_bot": false },
-    "chat": { "id": 123456789, "type": "private" },
-    "text": "/start"
-  }
+  "success": true,
+  "data": { ... },
+  "message": "Optional human-readable message (i18n-resolved)"
 }
-```
-Bot's outgoing `sendMessage`:
-```json
+
+// Error
 {
-  "chat_id": 123456789,
-  "text": "Welcome! Please choose your language / እባክዎ ቋንቋ ይምረጡ:",
-  "reply_markup": {
-    "inline_keyboard": [[
-      { "text": "English", "callback_data": "lang:en" },
-      { "text": "አማርኛ", "callback_data": "lang:am" }
-    ]]
+  "success": false,
+  "error": {
+    "code": "MACHINE_READABLE_CODE",
+    "message": "Human-readable message (i18n-resolved)"
   }
 }
 ```
 
-**Contact share**
+#### HTTP status codes
+
+| Status | Meaning |
+|---|---|
+| 200 | Success (GET, PUT, PATCH, POST that returns existing resource) |
+| 201 | Created (POST that creates a new resource) |
+| 400 | `VALIDATION_FAILED` — request body/query failed Zod validation |
+| 401 | `INVALID_TOKEN`, `INVALID_TOKEN_FOR_ROUTER`, `INVALID_CREDENTIALS` |
+| 403 | `INSUFFICIENT_ROLE`, `ACCOUNT_DISABLED`, `RATE_LIMITED` |
+| 404 | `NOT_FOUND` |
+| 409 | `ALREADY_PURCHASED`, `DUPLICATE_NICKNAME`, `DUPLICATE_GRADE_NUMBER` |
+| 422 | Business rule violation (`BANK_NOT_FOUND`, `ZONE_REGION_MISMATCH`, `GRADE_BAND_MISMATCH`, `EMPTY_SEGMENT`, `BANK_HAS_ACTIVE_USERS`, etc.) |
+| 500 | `INTERNAL_ERROR` — unexpected exception |
+
+#### Authentication
+
+All `/api/v1/*` routes (except onboarding + Chapa webhook) require:
+
+```
+Authorization: Bearer <user-jwt>
+```
+
+All `/admin/api/v1/*` routes (except `/auth/login`, `/auth/refresh`, `/auth/logout`) require:
+
+```
+Authorization: Bearer <staff-jwt>
+```
+
+User JWTs are issued by `POST /api/v1/auth/issue-token` (called by the bot gateway after onboarding completes). Staff JWTs are issued by `POST /admin/api/v1/auth/login`.
+
+#### Common error codes
+
+`INVALID_TOKEN`, `INVALID_TOKEN_FOR_ROUTER`, `INVALID_CREDENTIALS`, `ACCOUNT_DISABLED`, `INSUFFICIENT_ROLE`, `VALIDATION_FAILED`, `RATE_LIMITED`, `NOT_FOUND`, `INTERNAL_ERROR`.
+
+---
+
+### 6.1 Onboarding wizard API (`/api/v1/onboarding/*`)
+
+The bot gateway (Telegram webhook in prod, direct internal calls in tests/Mini App) drives these steps one at a time, mutating a Redis-backed wizard session.
+
+SEC-003: the `X-Telegram-Init-Data` header is verified on all onboarding routes if present. If absent (bot-gateway internal call), the request is allowed through as a trusted fallback.
+
+#### POST /api/v1/onboarding/start
+
+Begin or resume the registration wizard.
+
+**Request body:**
 ```json
-POST /webhooks/telegram/bot
 {
-  "update_id": 900002,
-  "message": {
-    "message_id": 3,
-    "from": { "id": 123456789, "username": "abebe_kebede" },
-    "chat": { "id": 123456789, "type": "private" },
-    "contact": { "phone_number": "+251911223344", "first_name": "Abebe", "user_id": 123456789 }
-  }
+  "telegramId": 987654321,
+  "telegramUsername": "tester"
 }
 ```
-`user_id` on the contact matches `from.id` → `contactIsSelf: true` is derived server-side and
-passed to `POST /onboarding/contact` (Section 6.3).
 
-**Interest checkbox toggle**
-```json
-POST /webhooks/telegram/bot
-{
-  "update_id": 900011,
-  "callback_query": {
-    "id": "cbq_1",
-    "from": { "id": 123456789 },
-    "message": { "message_id": 14, "chat": { "id": 123456789 } },
-    "data": "int:toggle:26"
-  }
-}
-```
-Bot's outgoing action is `answerCallbackQuery` (silent ack) + `editMessageReplyMarkup` on
-`message_id: 14` with the updated checkbox states from the `POST /interests/toggle` response.
-
-### 6.3 Onboarding wizard API
-
-#### `POST /onboarding/start`
-Request:
-```json
-{ "telegramId": 123456789, "telegramUsername": "abebe_kebede" }
-```
-Response — new user:
+**Response (brand-new user):**
 ```json
 {
   "success": true,
@@ -654,13 +431,14 @@ Response — new user:
   }
 }
 ```
-Edge case — already fully registered:
+
+**Response (already registered):**
 ```json
 {
   "success": true,
   "data": {
     "step": "already_registered",
-    "userId": 4521,
+    "userId": 42,
     "bankName": "Commercial Bank of Ethiopia",
     "currentLocation": "East Shewa, Oromia",
     "branchName": "Adama Main Branch"
@@ -668,123 +446,118 @@ Edge case — already fully registered:
   "message": "Welcome back! Use /feed to browse the marketplace or /profile to update your details."
 }
 ```
-Edge case — abandoned mid-flow, session resumed at last completed step:
+
+#### POST /api/v1/onboarding/language
+
+**Request body:**
 ```json
-{ "success": true, "data": { "step": "select_bank", "resumed": true, "banks": [ "..." ] } }
+{ "telegramId": 987654321, "language": "en" }
 ```
 
-#### `POST /onboarding/language`
-Request: `{ "telegramId": 123456789, "language": "am" }`
-Response:
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "share_contact",
-    "prompt": "ለመቀጠል የስልክ ቁጥርዎን ያጋሩ።",
+    "prompt": "To continue, please share your phone number.",
     "requiresNativeContactShare": true
   }
 }
 ```
-Edge case — unsupported language:
-```json
-{ "success": false, "error": { "code": "INVALID_LANGUAGE", "message": "Supported languages are 'en' and 'am'." } }
-```
 
-#### `POST /onboarding/contact`
-Request:
+**Errors:** `INVALID_LANGUAGE` (422) if `language` is not `'en'` or `'am'`.
+
+#### POST /api/v1/onboarding/contact
+
+Verify contact-share and proceed to bank selection.
+
+**Request body:**
 ```json
 {
-  "telegramId": 123456789,
-  "telegramUsername": "abebe_kebede",
-  "phoneNumber": "+251911223344",
+  "telegramId": 987654321,
+  "telegramUsername": "tester",
+  "phoneNumber": "+251911000000",
   "contactIsSelf": true
 }
 ```
-Response:
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "select_bank",
     "banks": [
-      { "id": 1, "name": "Commercial Bank of Ethiopia", "nickname": "cbe" },
-      { "id": 2, "name": "Awash Bank", "nickname": "awash" }
+      { "id": 1, "nickname": "cbe", "name": "Commercial Bank of Ethiopia", "is_active": true },
+      { "id": 2, "nickname": "awash", "name": "Awash Bank", "is_active": true }
     ],
-    "page": 1, "pageSize": 10, "totalBanks": 31
+    "page": 1,
+    "pageSize": 10,
+    "totalBanks": 31
   }
 }
 ```
-Edge case — shared contact belongs to someone else:
-```json
-{ "success": false, "error": { "code": "CONTACT_NOT_SELF", "message": "Please share your own contact, not someone else's." } }
-```
-Edge case — phone already registered under a different Telegram account for the same bank (FR-AUTH-003):
-```json
-{
-  "success": false,
-  "error": {
-    "code": "DUPLICATE_PHONE",
-    "message": "This phone number is already registered with Commercial Bank of Ethiopia under a different Telegram account."
-  }
-}
-```
-Edge case — no Telegram username set (allowed to proceed, flagged for later):
-```json
-{
-  "success": true,
-  "data": { "step": "select_bank", "banks": [ "..." ] },
-  "message": "No Telegram username found — buyers will see your phone/branch on reveal instead. You can add a username in Telegram Settings anytime."
-}
-```
-**OTP fallback** (used only if native contact-share is unavailable, per FR-AUTH-002):
-`POST /onboarding/otp/request` → `{ "telegramId": 123456789, "phoneNumber": "+251911223344" }` →
-`{ "success": true, "data": { "step": "otp_verify", "otpExpiresInSeconds": 300 } }`
-`POST /onboarding/otp/verify` → `{ "telegramId": 123456789, "code": "482913" }` → same response
-shape as `contact` success above, or `{ "success": false, "error": { "code": "OTP_INVALID", "message": "Incorrect or expired code." } }`.
 
-#### `POST /onboarding/bank`
-Request: `{ "telegramId": 123456789, "bankId": 1 }`
-Response:
+**Errors:** `CONTACT_NOT_SELF` (422) if `contactIsSelf` is `false`.
+
+If `telegramUsername` is missing, a `message` field is included warning the user that buyers will see phone/branch on reveal instead.
+
+#### POST /api/v1/onboarding/bank
+
+**Request body:**
+```json
+{ "telegramId": 987654321, "bankId": 1 }
+```
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "select_region",
     "regions": [
-      { "id": 1, "name": "Addis Ababa", "levelType": "region" },
-      { "id": 16, "name": "Oromia", "levelType": "region" },
-      { "id": 41, "name": "Amhara", "levelType": "region" }
+      { "id": 1, "name": "Addis Ababa", "is_active": true },
+      { "id": 16, "name": "Oromia", "is_active": true }
     ]
   }
 }
 ```
-Edge case — invalid/inactive bank:
+
+**Errors:** `BANK_NOT_FOUND` (422) if the bank doesn't exist or is inactive.
+
+#### POST /api/v1/onboarding/region
+
+**Request body:**
 ```json
-{ "success": false, "error": { "code": "BANK_NOT_FOUND", "message": "Selected bank is not available." } }
+{ "telegramId": 987654321, "regionId": 16 }
 ```
 
-#### `POST /onboarding/region`
-Request: `{ "telegramId": 123456789, "regionId": 16 }`
-Response:
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "select_zone",
-    "region": { "id": 16, "name": "Oromia" },
+    "region": { "id": 16, "name": "Oromia", "is_active": true },
     "zones": [
-      { "id": 25, "name": "East Shewa" },
-      { "id": 35, "name": "Jimma" },
-      { "id": 39, "name": "Sheger City" }
+      { "id": 17, "name": "Arsi", "is_active": true },
+      { "id": 25, "name": "East Shewa", "is_active": true }
     ]
   }
 }
 ```
 
-#### `POST /onboarding/zone`
-Request: `{ "telegramId": 123456789, "zoneId": 25 }`
-Response:
+**Errors:** `NOT_FOUND` (404) if the region doesn't exist or isn't a region.
+
+#### POST /api/v1/onboarding/zone
+
+**Request body:**
+```json
+{ "telegramId": 987654321, "zoneId": 25 }
+```
+
+**Response:**
 ```json
 {
   "success": true,
@@ -795,106 +568,163 @@ Response:
   }
 }
 ```
-Edge case — `zoneId` doesn't belong to the previously selected region (stale/tampered client state):
-```json
-{ "success": false, "error": { "code": "ZONE_REGION_MISMATCH", "message": "Please pick a zone from the region you selected." } }
-```
 
-#### `POST /onboarding/branch-details`
-Request:
+**Errors:** `NOT_FOUND` (404) if the zone doesn't exist or isn't a zone_subcity. `ZONE_REGION_MISMATCH` (422) if the zone doesn't belong to the previously selected region.
+
+#### POST /api/v1/onboarding/branch-details
+
+**Request body:**
 ```json
 {
-  "telegramId": 123456789,
+  "telegramId": 987654321,
   "branchName": "Adama Main Branch",
-  "neighborhood": "Bole Road, near Adama Stadium"
+  "neighborhood": "Bole Road"
 }
 ```
-Response:
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "select_grade",
-    "grades": [
-      { "id": 11, "name": "Officer I" },
-      { "id": 12, "name": "Officer II" },
-      { "id": 13, "name": "Senior Officer" }
+    "bands": [
+      { "band_label": "Junior", "band_label_am": "ጁኒየር" },
+      { "band_label": "Mid", "band_label_am": "መካከለኛ" }
     ]
   }
 }
 ```
-Edge case — branch name too short:
+
+**Errors:** `INVALID_BRANCH_NAME` (422) if `branchName` is less than 3 characters.
+
+If `neighborhood` is omitted, a `message` field notes it was skipped.
+
+#### POST /api/v1/onboarding/grade-band
+
+**Request body:**
 ```json
-{ "success": false, "error": { "code": "INVALID_BRANCH_NAME", "message": "Branch name must be at least 3 characters." } }
-```
-Edge case — neighborhood omitted (allowed, it's optional):
-```json
-{ "success": true, "data": { "step": "select_grade", "grades": [ "..." ] }, "message": "Neighborhood skipped — you can add it later from /profile." }
+{ "telegramId": 987654321, "bandLabel": "Mid" }
 ```
 
-#### `POST /onboarding/grade-band`
-Grade is shared, industry-standard reference data (not bank-scoped, Section 3.1/3.3) — 18
-individual grade numbers don't fit one inline-keyboard screen, so selection is two-tier: pick a
-band first, then a specific grade number within it (same UX pattern as region → zone).
-
-Request: `{ "telegramId": 123456789, "bandLabel": "Grades 6–9" }`
-Response:
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "select_grade_number",
-    "band": { "bandLabel": "Grades 6–9", "tierClassification": "Junior Professional" },
+    "band": { "band_label": "Mid", "band_label_am": "መካከለኛ" },
     "grades": [
-      { "id": 6, "gradeNumber": 6, "typicalRoles": "CSO I, Junior IT, Junior Auditor" },
-      { "id": 7, "gradeNumber": 7, "typicalRoles": "CSO I, Junior IT, Junior Auditor" },
-      { "id": 8, "gradeNumber": 8, "typicalRoles": "CSO I, Junior IT, Junior Auditor" },
-      { "id": 9, "gradeNumber": 9, "typicalRoles": "CSO I, Junior IT, Junior Auditor" }
+      { "id": 7, "grade_number": 7, "tier_classification": "Officer I" },
+      { "id": 8, "grade_number": 8, "tier_classification": "Officer II" }
     ]
   }
 }
 ```
-Edge case — unknown/inactive band: `{ "success": false, "error": { "code": "BAND_NOT_FOUND", "message": "Selected grade band is not available." } }`
 
-#### `POST /onboarding/grade`
-Request: `{ "telegramId": 123456789, "gradeId": 7 }`
-Response — profile created and activated:
+**Errors:** `BAND_NOT_FOUND` (422) if `bandLabel` doesn't match any seeded band.
+
+#### POST /api/v1/onboarding/grade
+
+Finalize the profile. Returns `userId`; the bot gateway then calls `/auth/issue-token` to mint the user JWT.
+
+**Request body:**
+```json
+{ "telegramId": 987654321, "gradeId": 7 }
+```
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "step": "profile_created",
-    "userId": 4521,
+    "userId": 42,
     "summary": {
       "bank": "Commercial Bank of Ethiopia",
       "region": "Oromia",
       "zone": "East Shewa",
       "branchName": "Adama Main Branch",
-      "grade": "Grade 7 — Junior Professional"
+      "grade": "Grade 7 — Officer I"
     }
-  }
+  },
+  "message": "Profile created successfully."
 }
 ```
-Edge case — `gradeId` doesn't belong to the previously selected band (stale/tampered client state):
+
+**Errors:** `NOT_FOUND` (404) if `gradeId` doesn't exist. `GRADE_BAND_MISMATCH` (422) if the grade doesn't belong to the previously selected band. `DUPLICATE_PHONE` (422) if the phone number is already registered under the same bank with a different Telegram account (FR-AUTH-003).
+
+#### POST /api/v1/onboarding/otp/request
+
+OTP fallback (FR-AUTH-002). Stub — in production this would actually send an OTP via SMS.
+
+**Request body:**
 ```json
-{ "success": false, "error": { "code": "GRADE_BAND_MISMATCH", "message": "Please pick a grade from the band you selected." } }
+{ "telegramId": 987654321, "phoneNumber": "+251911000000" }
 ```
 
-The bot chains this directly into the interest step by calling
-`GET /interests/zone-options` (Section 6.4) immediately after showing the profile summary.
+**Response:**
+```json
+{
+  "success": true,
+  "data": { "step": "otp_verify", "otpExpiresInSeconds": 300 }
+}
+```
 
-### 6.4 Interest selection API
+#### POST /api/v1/onboarding/otp/verify
 
-Interest selection defaults to the user's **own** region, shown as a multi-select checkbox list,
-with a "🔄 Change region" action to browse and pick from a different region's zones. The
-in-progress multi-select set is held server-side in the same Redis wizard session (keyed by
-`telegramId`) so it survives across the many separate Telegram callback-query webhook calls one
-checkbox toggle produces.
+**Request body:**
+```json
+{ "telegramId": 987654321, "code": "123456" }
+```
 
-#### `GET /interests/zone-options?telegramId=123456789&regionId=16`
-(`regionId` optional — defaults to the user's own region when omitted)
+**Response:** Same shape as `/onboarding/contact` (proceeds to `select_bank`).
 
-Response:
+**Errors:** `OTP_INVALID` (422) if the code isn't 4–10 digits.
+
+---
+
+### 6.2 Auth — user JWT issuance
+
+#### POST /api/v1/auth/issue-token
+
+Exchange a freshly-onboarded `telegramId` for a user JWT. Called by the bot gateway right after `profile_created`. Only succeeds if the user exists in the DB.
+
+**Request body:**
+```json
+{ "telegramId": 987654321 }
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": { "token": "eyJhbGciOi...", "userId": 42 }
+}
+```
+
+**Errors:** `VALIDATION_FAILED` (400) if `telegramId` is missing. `NOT_FOUND` (404) if no user has that Telegram ID.
+
+The returned JWT has `scope: 'user'`, `expiresIn: '7d'` (configurable via `JWT_EXPIRES_IN`). It is the only token accepted on `/api/v1/*` routes (except onboarding + Chapa webhook).
+
+---
+
+### 6.3 Interests API
+
+Two flavors: the bot-side `GET /interests/zone-options` (unauthenticated, identified by `telegramId` query param — used by the bot gateway) and the authenticated user-side endpoints (identified by JWT).
+
+#### GET /api/v1/interests/zone-options
+
+Fetch zones for a region with checkbox state. Used by the bot to render the multi-select keyboard.
+
+**Query params:**
+```
+?telegramId=987654321&regionId=16
+```
+
+`regionId` is optional — defaults to the user's own region (where their zone sits).
+
+**Response:**
 ```json
 {
   "success": true,
@@ -902,47 +732,40 @@ Response:
     "region": { "id": 16, "name": "Oromia" },
     "isUserHomeRegion": true,
     "zones": [
-      { "id": 25, "name": "East Shewa", "selected": false },
-      { "id": 26, "name": "West Shewa", "selected": false },
-      { "id": 35, "name": "Jimma", "selected": true },
-      { "id": 39, "name": "Sheger City", "selected": false }
+      { "id": 17, "name": "Arsi", "selected": false },
+      { "id": 25, "name": "East Shewa", "selected": true },
+      { "id": 26, "name": "West Shewa", "selected": false }
     ],
     "currentSelectionCount": 1
   }
 }
 ```
-Edge case — called before registration finished:
+
+**Errors:** `PROFILE_INCOMPLETE` (422) if no user exists for `telegramId`. `NOT_FOUND` (404) if `regionId` doesn't reference a region.
+
+#### POST /api/v1/interests/toggle
+
+Toggle one zone's checkbox in the in-progress selection set (held in the bot session).
+
+**Request body:**
 ```json
-{ "success": false, "error": { "code": "PROFILE_INCOMPLETE", "message": "Please finish registration before selecting transfer interests." } }
+{ "telegramId": 987654321, "regionId": 16, "locationId": 25 }
 ```
 
-#### `POST /interests/toggle`
-Toggles one zone's checkbox (fired on every inline-keyboard tap so the bot can `editMessageReplyMarkup` in place):
-Request: `{ "telegramId": 123456789, "regionId": 16, "locationId": 26 }`
-Response:
+**Response:** Same shape as `/interests/zone-options` (returns the full updated zone list for the region).
+
+**Errors:** `STALE_INTERACTION` (422) if the user isn't currently viewing that region (stale callback). `ZONE_REGION_MISMATCH` (422) if the zone doesn't belong to the region.
+
+#### POST /api/v1/interests/change-region
+
+Switch the wizard to a different region's zones. Prior selections in other regions are preserved in the session.
+
+**Request body:**
 ```json
-{
-  "success": true,
-  "data": {
-    "region": { "id": 16, "name": "Oromia" },
-    "zones": [
-      { "id": 25, "name": "East Shewa", "selected": false },
-      { "id": 26, "name": "West Shewa", "selected": true },
-      { "id": 35, "name": "Jimma", "selected": true },
-      { "id": 39, "name": "Sheger City", "selected": false }
-    ],
-    "currentSelectionCount": 2
-  }
-}
-```
-Edge case — toggling a zone from a region the user isn't currently viewing (stale callback from an old message):
-```json
-{ "success": false, "error": { "code": "STALE_INTERACTION", "message": "This selection screen has expired — please reopen /interests." } }
+{ "telegramId": 987654321, "newRegionId": 41 }
 ```
 
-#### `POST /interests/change-region`
-Request: `{ "telegramId": 123456789, "newRegionId": 41 }`
-Response — re-fetches the new region's zones; prior picks in other regions are kept in the session:
+**Response:**
 ```json
 {
   "success": true,
@@ -950,787 +773,1231 @@ Response — re-fetches the new region's zones; prior picks in other regions are
     "region": { "id": 41, "name": "Amhara" },
     "isUserHomeRegion": false,
     "zones": [
-      { "id": 42, "name": "North Gondar", "selected": false },
-      { "id": 53, "name": "Bahir Dar Special Zone", "selected": false }
+      { "id": 42, "name": "North Gondar", "selected": false }
     ],
-    "currentSelectionCount": 2
+    "currentSelectionCount": 1
   },
-  "message": "Your 2 selections in other regions are still kept. Confirm when done."
+  "message": "Your 1 selections in other regions are still kept. Confirm when done."
 }
 ```
 
-#### `POST /interests/confirm`
-Persists the accumulated selection set as `transfer_interests` rows (idempotent — re-confirming
-existing picks is a no-op thanks to the `uq_user_location` constraint).
-Request: `{ "telegramId": 123456789 }`
-Response:
+**Errors:** `NOT_FOUND` (404) if `newRegionId` doesn't reference a region.
+
+#### POST /api/v1/interests/confirm
+
+Persist the accumulated selection set as `transfer_interests` rows. Idempotent via `uq_user_location` constraint.
+
+**Request body:**
+```json
+{ "telegramId": 987654321 }
+```
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "createdInterests": [
-      { "id": 9001, "locationId": 26, "locationName": "West Shewa" },
-      { "id": 9002, "locationId": 35, "locationName": "Jimma" }
+      { "id": 10, "locationId": 25, "locationName": "East Shewa" }
     ],
-    "totalActiveInterests": 2
+    "totalActiveInterests": 1
   },
   "message": "You'll be notified when a matching lead appears. Use /feed anytime to browse now."
 }
 ```
-Edge case — confirm called with nothing selected:
-```json
-{ "success": false, "error": { "code": "NO_SELECTION", "message": "Select at least one location before confirming." } }
-```
 
-#### `GET /interests/me`
-Response:
+**Errors:** `NO_SELECTION` (422) if the in-progress selection set is empty.
+
+#### GET /api/v1/interests/me
+
+List the authenticated user's persisted interests.
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "interests": [
-      { "id": 9001, "locationId": 26, "locationName": "West Shewa", "levelType": "zone_subcity", "createdAt": "2026-07-10T08:12:00Z" },
-      { "id": 9002, "locationId": 35, "locationName": "Jimma", "levelType": "zone_subcity", "createdAt": "2026-07-10T08:12:00Z" }
+      { "id": 10, "locationId": 25, "locationName": "East Shewa", "createdAt": "2026-07-18T..." }
     ]
   }
 }
 ```
 
-#### `DELETE /interests/:id`
-Response: `{ "success": true, "data": { "deletedId": 9002 } }`
-Edge case — not the owner:
+#### DELETE /api/v1/interests/:id
+
+Remove one of the user's own interests.
+
+**Response:**
 ```json
-{ "success": false, "error": { "code": "FORBIDDEN", "message": "You can only remove your own interests." } }
+{ "success": true, "data": { "deletedId": 10 } }
 ```
-Edge case — not found: `{ "success": false, "error": { "code": "NOT_FOUND", "message": "Interest not found." } }`
 
-### 6.5 Profile
+**Errors:** `NOT_FOUND` (404) if the interest doesn't exist. `FORBIDDEN` (403) if the interest belongs to a different user.
 
-#### `GET /me`
-Response:
+---
+
+### 6.4 Profile API
+
+#### GET /api/v1/me
+
+Get the authenticated user's profile.
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
-    "userId": 4521, "bank": "Commercial Bank of Ethiopia",
-    "region": "Oromia", "zone": "East Shewa",
-    "branchName": "Adama Main Branch", "neighborhood": "Bole Road, near Adama Stadium",
-    "grade": { "gradeNumber": 7, "bandLabel": "Grades 6–9", "tierClassification": "Junior Professional" },
-    "preferredLanguage": "am"
+    "userId": 42,
+    "bank": "Commercial Bank of Ethiopia",
+    "region": "Oromia",
+    "zone": "East Shewa",
+    "branchName": "Adama Main Branch",
+    "neighborhood": "Bole Road",
+    "grade": {
+      "gradeNumber": 7,
+      "bandLabel": "Mid",
+      "tierClassification": "Officer I"
+    },
+    "preferredLanguage": "en"
   }
 }
 ```
 
-#### `PUT /me`
-Self-service (Open Item #2 in Section 15 resolved: no admin verification gate). Any subset of
-`branchName`, `neighborhood`, `regionId`+`zoneId`, `gradeId`, `preferredLanguage` may be updated directly; bank cannot
-be changed post-registration (would invalidate matching/purchase history — unsupported in v1).
-Request: `{ "branchName": "Adama Main Branch 2", "neighborhood": "Near the roundabout", "regionId": 16, "zoneId": 26, "gradeId": 8, "preferredLanguage": "en" }`
-Response: `{ "success": true, "data": { "updated": true } }`
-Edge case — `zoneId` doesn't belong to `regionId` (same validation as onboarding):
+#### PUT /api/v1/me
+
+Self-service profile update. Bank cannot be changed post-registration (`BANK_CHANGE_UNSUPPORTED`).
+
+**Request body (any subset):**
 ```json
-{ "success": false, "error": { "code": "ZONE_REGION_MISMATCH", "message": "Please pick a zone from the region you selected." } }
-```
-Edge case — attempting to change `bankId`:
-```json
-{ "success": false, "error": { "code": "BANK_CHANGE_UNSUPPORTED", "message": "Changing your bank isn't supported — please contact support." } }
+{
+  "branchName": "Adama Main Branch 2",
+  "neighborhood": "Near the roundabout",
+  "regionId": 16,
+  "zoneId": 26,
+  "gradeId": 8,
+  "preferredLanguage": "am"
+}
 ```
 
-### 6.6 Marketplace feed
+**Response:**
+```json
+{ "success": true, "data": { "updated": true } }
+```
 
-#### `GET /marketplace/feed?page=1&pageSize=10&fresh=false`
-Response — sorted mutual matches first (Section 5), then by specificity, region-level matches
-naturally sink further down but stay visible with a `matchWarning`:
+**Errors:** `BANK_CHANGE_UNSUPPORTED` (422) if `bankId` is supplied. `ZONE_REGION_MISMATCH` (422) if `zoneId` doesn't belong to `regionId`. `NOT_FOUND` (404) if `zoneId` or `gradeId` don't exist. `INVALID_LANGUAGE` (422) if `preferredLanguage` isn't `'en'` or `'am'`. `VALIDATION_FAILED` (400) if an unknown field is supplied (schema is `.strict()`).
+
+---
+
+### 6.5 Marketplace feed
+
+#### GET /api/v1/marketplace/feed
+
+Browse matching candidates. Rate-limited: 60 req/min per user (SEC-008).
+
+**Query params:**
+```
+?page=1&pageSize=10&fresh=true
+```
+
+| Param | Default | Notes |
+|---|---|---|
+| `page` | 1 | 1-indexed |
+| `pageSize` | 10 | Max 100 |
+| `fresh` | false | Bypass the 30s Redis cache (FR-MATCH-007) |
+
+**Response (no matches):**
+```json
+{
+  "success": true,
+  "data": { "results": [], "page": 1, "pageSize": 10, "totalResults": 0 },
+  "message": "No matches yet. We'll notify you as soon as one appears."
+}
+```
+
+**Response (with matches):**
 ```json
 {
   "success": true,
   "data": {
     "results": [
       {
-        "candidateId": "c_7742",
-        "grade": "Grade 8 — Junior Professional",
-        "matchedLocation": "East Shewa, Oromia",
+        "candidateId": "c_43",
+        "candidateUserId": 43,
+        "matchedInterestId": 11,
+        "grade": "Grade 8 — Officer II",
+        "matchedLocation": "East Shewa",
         "specificity": "zone_subcity",
         "isMutualMatch": true,
         "matchWarning": null,
         "unlocked": false
       },
       {
-        "candidateId": "c_9931",
-        "grade": "Grade 7 — Junior Professional",
+        "candidateId": "c_44",
+        "candidateUserId": 44,
+        "matchedInterestId": 12,
+        "grade": "Grade 7 — Officer I",
         "matchedLocation": "Oromia",
         "specificity": "region",
         "isMutualMatch": false,
         "matchWarning": "This candidate is interested in the broader Oromia region, not specifically East Shewa.",
         "unlocked": true,
-        "contact": { "telegramUsername": "sara_bekele", "phone": "+251911998877", "branchName": "Bole Branch" }
+        "contact": {
+          "telegramUsername": "target_user",
+          "phone": "+251911000108",
+          "branchName": "Adama Main Branch",
+          "neighborhood": "Bole Road"
+        }
       }
     ],
-    "page": 1, "pageSize": 10, "totalResults": 2
+    "page": 1,
+    "pageSize": 10,
+    "totalResults": 2
   }
 }
 ```
-`isMutualMatch: true` means this candidate is also currently sitting somewhere the requesting
-user has expressed interest in — a two-way swap opportunity, not just a one-directional lead
-(Section 5). `matchedLocation` and `matchWarning` are always free regardless of specificity —
-only identity fields (`telegramUsername`, `phone`, `branchName`) require a purchase.
 
-Edge case — no matches yet:
+The `contact` object is only present when `unlocked: true` (a completed purchase exists for `(buyer=viewer, target=candidate)` — SEC-010).
+
+---
+
+### 6.6 Purchases & Chapa payment webhook
+
+#### POST /api/v1/purchases
+
+Initiate a reveal purchase. Rate-limited: 10 req/min per user (SEC-008). BR-006: a buyer can never purchase the same target twice — enforced by both a short-lived Redis mutex (closes the race window) and the `uq_buyer_target` DB unique constraint (the real guard).
+
+**Request body:**
 ```json
-{ "success": true, "data": { "results": [], "page": 1, "pageSize": 10, "totalResults": 0 }, "message": "No matches yet. We'll notify you as soon as one appears." }
+{ "targetUserId": 43 }
 ```
 
-### 6.7 Purchases & payments
-
-#### `POST /purchases`
-Request: `{ "targetUserId": 9931 }`
-Response — invoice created, awaiting payment:
+**Response:**
 ```json
 {
   "success": true,
   "data": {
-    "purchaseId": 5501,
-    "paymentId": 8801,
+    "purchaseId": 100,
+    "paymentId": 100,
     "status": "pending",
-    "telegramInvoiceLink": "https://t.me/invoice/xxxxx"
+    "checkoutUrl": "https://checkout.chapa.co/test/purchase:100_500_ETB"
   }
 }
 ```
-Edge case — already purchased (BR-006):
-```json
-{ "success": false, "error": { "code": "ALREADY_PURCHASED", "message": "You've already unlocked this contact." } }
-```
-Edge case — target no longer active:
-```json
-{ "success": false, "error": { "code": "TARGET_INACTIVE", "message": "This candidate is no longer available." } }
-```
 
-#### `POST /webhooks/telegram/payments`
-Handles `pre_checkout_query` (must be answered within Telegram's timeout) and `successful_payment`.
-Request (successful_payment excerpt):
+The bot/Mini App deep-links the user to `checkoutUrl` (Chapa's hosted checkout page). After the user completes payment on Chapa, Chapa POSTs to `/api/v1/webhooks/chapa` (see §6.11).
+
+**Errors:** `ALREADY_PURCHASED` (409) if a purchase already exists for this `(buyer, target)` pair. `TARGET_INACTIVE` (422) if the target user doesn't exist, is inactive, or belongs to a different bank (BR-001).
+
+#### GET /api/v1/me/purchases
+
+List the buyer's own purchases.
+
+**Response:**
 ```json
 {
-  "update_id": 900050,
-  "message": {
-    "successful_payment": {
-      "telegram_payment_charge_id": "tg_charge_abc123",
-      "total_amount": 5000,
-      "currency": "ETB",
-      "invoice_payload": "purchase:5501"
+  "success": true,
+  "data": {
+    "purchases": [
+      {
+        "purchaseId": 100,
+        "targetUserId": 43,
+        "status": "pending",
+        "createdAt": "2026-07-18T..."
+      },
+      {
+        "purchaseId": 99,
+        "targetUserId": 44,
+        "status": "completed",
+        "createdAt": "2026-07-17T..."
+      }
+    ]
+  }
+}
+```
+
+`status` is `'completed'` if a completed payment exists for the purchase, else `'pending'`.
+
+---
+
+### 6.7 Notifications
+
+#### GET /api/v1/me/notifications
+
+List the authenticated user's notifications (digests, broadcasts, payment confirmations).
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "notifications": [
+      {
+        "type": "digest",
+        "sentAt": "2026-07-18T06:00:00.000Z",
+        "summary": "3 new matches near your location",
+        "payload": { "summary": "3 new matches near your location" }
+      },
+      {
+        "type": "broadcast",
+        "sentAt": "2026-07-17T15:30:00.000Z",
+        "summary": null,
+        "payload": {
+          "message": { "en": "Maintenance tonight", "am": "የጥገና ስራ ዛሬ ማታ" },
+          "scope": "all"
+        }
+      },
+      {
+        "type": "payment_confirmation",
+        "sentAt": "2026-07-17T14:00:00.000Z",
+        "summary": null,
+        "payload": {
+          "purchaseId": 99,
+          "amountEtb": 500,
+          "targetUserId": 44
+        }
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 6.8 Admin auth (login / refresh / logout)
+
+`answers.md` §D — staff auth uses a 30-minute access JWT + 7-day opaque refresh token (stored hashed in `staff_refresh_tokens`).
+
+#### POST /admin/api/v1/auth/login
+
+Staff login. Rate-limited per IP (SEC-005): 5 failed attempts → 15-minute lockout.
+
+**Request body:**
+```json
+{ "email": "superadmin@lateral.local", "password": "ChangeMe123!" }
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOi...",
+    "refreshToken": "v1.kp3_x9...",
+    "refreshExpiresAt": "2026-07-25T12:00:00.000Z",
+    "staff": {
+      "id": 1,
+      "fullName": "Super Admin",
+      "email": "superadmin@lateral.local",
+      "roleId": 1,
+      "preferredLanguage": "en"
     }
   }
 }
 ```
-Response (to Telegram): `200 OK` (empty body). Internally: marks `payments.status='completed'`,
-finalizes the `purchases` row, enqueues a payment-confirmation notification, writes an audit log.
-Edge case — duplicate webhook delivery (same `telegram_payment_charge_id` already completed):
-processed as a no-op, still returns `200 OK` (idempotency, FR-PAY-002).
 
-#### `GET /me/purchases`
-Response:
+The access `token` has `scope: 'staff'`, `expiresIn: '30m'` (configurable via `ADMIN_JWT_EXPIRES_IN`). The `refreshToken` is an opaque high-entropy string (NOT a JWT) — only its SHA-256 hash is stored in the DB, so a DB leak doesn't immediately compromise active sessions.
+
+**Errors:** `INVALID_CREDENTIALS` (401) — message: `"The email or password you entered is incorrect."` (reworded per `answers.md` §G — deliberately generic to avoid user enumeration). `ACCOUNT_DISABLED` (403) if the staff account is inactive. `RATE_LIMITED` (403) after 5 failed attempts from the same IP.
+
+#### POST /admin/api/v1/auth/refresh
+
+Exchange a valid refresh token for a new access token + rotated refresh token. The old refresh token is revoked on use (rotation) — reuse of a revoked token triggers defensive revocation of ALL tokens for that staff member (possible theft, per RFC 6749 §10.4).
+
+**Request body:**
 ```json
-{ "success": true, "data": { "purchases": [ { "purchaseId": 5501, "targetUserId": 9931, "status": "completed", "createdAt": "2026-07-15T09:00:00Z" } ] } }
+{ "refreshToken": "v1.kp3_x9..." }
 ```
 
-### 6.8 Notifications
+**Response:** Same shape as `/auth/login`.
 
-#### `GET /me/notifications`
-Response:
+**Errors:** `INVALID_TOKEN` (401) if the refresh token is unknown, expired, or already revoked.
+
+#### POST /admin/api/v1/auth/logout
+
+Revoke the supplied refresh token. Idempotent — calling logout with an unknown or already-revoked token returns 200.
+
+Optionally authenticated (if the access token is still valid, the staff id from it is used for the audit log; otherwise logout proceeds anyway).
+
+**Request body:**
 ```json
-{ "success": true, "data": { "notifications": [ { "type": "digest", "sentAt": "2026-07-16T06:00:00Z", "summary": "2 new matches near East Shewa" } ] } }
+{ "refreshToken": "v1.kp3_x9..." }
 ```
 
-#### `POST /admin/api/v1/notifications/broadcast`
+**Response:**
+```json
+{ "success": true, "data": { "loggedOut": true } }
+```
 
-Sends a promotion to a chosen audience. `segmentFilter.scope` controls reach:
-- `"all"` — every active user (no further filter required; bankId/regionId/zoneId ignored)
-- `"bank"` — all active users in one bank (requires `bankId`)
-- `"region"` — all active users whose `current_location_id` resolves under `regionId`
-  (uses the location_ancestors closure; covers every zone/subcity in that region)
-- `"zone"` — all active users whose `current_location_id = zoneId` (zone/subcity only)
+**Revocation triggers:** logout (single token), password change (all tokens for that staff), staff deactivation via FR-ADM-003 (all tokens for that staff), refresh-token reuse detection (all tokens for that staff — defensive).
 
-Filters can be combined where it makes sense: `bank` + `region` narrows to users of
-that bank in that region; `bank` + `zone` narrows further. The endpoint validates the
-combination and rejects contradictions (e.g. `zoneId` whose parent isn't `regionId`).
+---
 
-Request — all users:
+### 6.9 Admin reference data & staff management
+
+All routes require a staff JWT with the appropriate role (see §11 RBAC matrix).
+
+#### GET /admin/api/v1/banks
+
+List all banks (admin view, includes inactive).
+
+**Query params:** `?page=1&pageSize=50&isActive=true`
+
+**Response:**
 ```json
 {
-  "segmentFilter": { "scope": "all" },
-  "message": { "en": "Platform maintenance tonight 11pm-12am.", "am": "..." }
-}
-```
-
-Request — region-scoped (optionally within a bank):
-```json
-{
-  "segmentFilter": { "scope": "region", "regionId": 16, "bankId": 1 },
-  "message": { "en": "...", "am": "..." }
-}
-```
-
-Request — zone-scoped:
-```json
-{
-  "segmentFilter": { "scope": "zone", "zoneId": 25, "bankId": 1 },
-  "message": { "en": "...", "am": "..." }
-}
-```
-
-Response:
-```json
-{ "success": true, "data": { "queuedRecipients": 214 } }
-```
-
-Edge case — empty segment:
-```json
-{ "success": false, "error": { "code": "EMPTY_SEGMENT", "message": "No users match this filter." } }
-```
-Edge case — `zoneId` not a `zone_subcity` (e.g. someone passes a region id):
-```json
-{ "success": false, "error": { "code": "INVALID_ZONE", "message": "zoneId must reference a zone_subcity, not a region." } }
-```
-Edge case — `zoneId`'s parent doesn't match `regionId` (when both supplied):
-```json
-{ "success": false, "error": { "code": "ZONE_REGION_MISMATCH", "message": "The selected zone does not belong to the selected region." } }
-```
-Edge case — region/zone scope without the corresponding id:
-```json
-{ "success": false, "error": { "code": "FILTER_INCOMPLETE", "message": "scope 'region' requires regionId; scope 'zone' requires zoneId." } }
-```
-
-### 6.9 Admin reference data & staff
-
-All endpoints under `/admin/api/v1`, RBAC-gated (Super Admin or Platform Admin only, per Section 11).
-Every mutation writes an `audit_logs` row (SEC-006) and, for location mutations, debounces a
-closure-table rebuild (Section 4.2).
-
-#### Banks — add (banks table only, never touches locations/grades)
-
-`POST /admin/api/v1/banks`
-Request:
-```json
-{
-  "name": "New Bank S.C.",
-  "nameAm": "ኒው ባንክ ኤስ.ሲ.",
-  "nickname": "newbank",
-  "swiftCode": "NEWBETAA",
-  "yearEstablished": 2026
-}
-```
-Response: `{ "success": true, "data": { "id": 32 } }`
-Edge case — duplicate nickname:
-```json
-{ "success": false, "error": { "code": "DUPLICATE_NICKNAME", "message": "Nickname already in use." } }
-```
-
-#### Banks — edit
-
-`PATCH /admin/api/v1/banks/:id`
-Request (any subset): `{ "name": "New Bank S.C. (Renamed)", "nameAm": "...", "isActive": false }`
-Response: `{ "success": true, "data": { "id": 32, "updated": true } }`
-Edge case — nickname collision on another row:
-```json
-{ "success": false, "error": { "code": "DUPLICATE_NICKNAME", "message": "Nickname already in use." } }
-```
-Edge case — bank has active users and admin tries to deactivate:
-```json
-{
-  "success": false,
-  "error": {
-    "code": "BANK_HAS_ACTIVE_USERS",
-    "message": "Cannot deactivate a bank with active users. Reassign or deactivate users first."
+  "success": true,
+  "data": {
+    "banks": [
+      {
+        "id": 1,
+        "name": "Commercial Bank of Ethiopia",
+        "name_am": "የኢትዮጵያ ንግድ ባንክ",
+        "nickname": "cbe",
+        "swift_code": "CBETETAA",
+        "year_established": 1963,
+        "is_active": true
+      }
+    ],
+    "page": 1,
+    "pageSize": 50,
+    "totalResults": 31
   }
 }
 ```
-*Note: editing a bank never modifies locations or grades — they share no foreign key.*
 
-#### Locations — add region or zone
+**Roles:** `super_admin`, `platform_admin`.
 
-`POST /admin/api/v1/locations`
-Request (region):
+#### POST /admin/api/v1/banks
+
+**Request body:**
 ```json
-{ "name": "New Region", "nameAm": "...", "levelType": "region" }
-```
-Request (zone):
-```json
-{ "name": "New Zone", "nameAm": "...", "levelType": "zone_subcity", "parentId": 16 }
-```
-Response: `{ "success": true, "data": { "id": 200, "closureRebuildQueued": true } }`
-Edge case — zone without parentId:
-```json
-{ "success": false, "error": { "code": "PARENT_REQUIRED", "message": "A zone/subcity must specify a parent region." } }
-```
-Edge case — parent is not a region:
-```json
-{ "success": false, "error": { "code": "INVALID_PARENT_LEVEL", "message": "Parent must be a region." } }
+{
+  "name": "Test Bank S.C.",
+  "nameAm": "ቴስት ባንክ",
+  "nickname": "testbank",
+  "swiftCode": "TESTETAA",
+  "yearEstablished": 2024
+}
 ```
 
-#### Locations — edit (rename, move, activate/deactivate)
-
-`PATCH /admin/api/v1/locations/:id`
-Request (any subset): `{ "name": "Renamed Zone", "nameAm": "...", "parentId": 41, "isActive": true }`
-Response: `{ "success": true, "data": { "id": 200, "updated": true, "closureRebuildQueued": true } }`
-Edge case — moving a region (regions have no parent):
+**Response (201):**
 ```json
-{ "success": false, "error": { "code": "REGION_CANNOT_HAVE_PARENT", "message": "Regions are top-level and cannot be reassigned a parent." } }
+{ "success": true, "data": { "id": 32 } }
 ```
-Edge case — setting `parentId` creates a cycle (a location reparented under its own descendant):
-```json
-{ "success": false, "error": { "code": "CYCLE_DETECTED", "message": "A location cannot be moved under its own descendant." } }
-```
-Edge case — location has active users and admin tries to deactivate:
-```json
-{ "success": false, "error": { "code": "LOCATION_HAS_ACTIVE_USERS", "message": "Cannot deactivate a location with active users." } }
-```
-*Side effect: every successful PATCH triggers the debounced closure rebuild (Section 4.2) so matching stays correct.*
 
-#### Grades — add
+**Errors:** `DUPLICATE_NICKNAME` (409).
 
-`POST /admin/api/v1/grades`
-Request:
+**Roles:** `super_admin`, `platform_admin`.
+
+#### PATCH /admin/api/v1/banks/:id
+
+**Request body (any subset):**
+```json
+{ "isActive": false }
+```
+
+**Response:**
+```json
+{ "success": true, "data": { "id": 1, "updated": true } }
+```
+
+**Errors:** `NOT_FOUND` (404). `BANK_HAS_ACTIVE_USERS` (422) if trying to deactivate a bank with active users. `DUPLICATE_NICKNAME` (409) if renaming to a collision.
+
+**Roles:** `super_admin`, `platform_admin`.
+
+#### GET /admin/api/v1/locations
+
+List the regions + zones tree (admin view).
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "locations": [
+      {
+        "id": 1,
+        "name": "Addis Ababa",
+        "name_am": "አዲስ አበባ",
+        "level_type": "region",
+        "is_active": true,
+        "zones": [
+          { "id": 2, "name": "Addis Ketema", "name_am": "አዲስ ከተማ", "level_type": "zone_subcity", "is_active": true }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Roles:** `super_admin`, `platform_admin`.
+
+#### POST /admin/api/v1/locations
+
+Add a region or a zone.
+
+**Request body (region):**
+```json
+{ "name": "New Region", "nameAm": "ኒው ሪጅን", "levelType": "region" }
+```
+
+**Request body (zone):**
+```json
+{ "name": "New Zone", "nameAm": "ኒው ዞን", "levelType": "zone_subcity", "parentId": 100 }
+```
+
+**Response (201):**
+```json
+{ "success": true, "data": { "id": 200, "closureRebuildQueued": true } }
+```
+
+The closure table is rebuilt synchronously after each location mutation.
+
+**Errors:** `PARENT_REQUIRED` (422) if `levelType='zone_subcity'` but no `parentId`. `INVALID_PARENT_LEVEL` (422) if `parentId` isn't a region. `REGION_CANNOT_HAVE_PARENT` (422) if `levelType='region'` but `parentId` supplied.
+
+**Roles:** `super_admin`, `platform_admin`.
+
+#### PATCH /admin/api/v1/locations/:id
+
+Rename / move / activate / deactivate.
+
+**Request body (any subset):**
+```json
+{ "name": "Renamed Zone", "nameAm": "እንደገና የተሰየመ ዞን", "isActive": false }
+```
+
+**Response:**
+```json
+{ "success": true, "data": { "id": 200, "updated": true, "closureRebuildQueued": true } }
+```
+
+**Errors:** `NOT_FOUND` (404). `LOCATION_HAS_ACTIVE_USERS` (422) if deactivating a location with active users. `CYCLE_DETECTED` (422) if moving a location under its own descendant.
+
+**Roles:** `super_admin`, `platform_admin`.
+
+#### GET /admin/api/v1/grades
+
+List all grades (admin view).
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "grades": [
+      {
+        "id": 7,
+        "grade_number": 7,
+        "band_label": "Mid",
+        "band_label_am": "መካከለኛ",
+        "tier_classification": "Officer I",
+        "tier_classification_am": "ኦፊሰር I",
+        "typical_roles": "...",
+        "typical_roles_am": "...",
+        "rank_order": 7,
+        "is_active": true
+      }
+    ]
+  }
+}
+```
+
+**Roles:** `super_admin`, `platform_admin`.
+
+#### POST /admin/api/v1/grades
+
+**Request body:**
 ```json
 {
   "gradeNumber": 19,
-  "bandLabel": "Grade 18+",
-  "bandLabelAm": "...",
-  "tierClassification": "Executive / C-Suite",
-  "tierClassificationAm": "...",
-  "typicalRoles": "Group CEO",
+  "bandLabel": "Director",
+  "bandLabelAm": "ዳይሬክተር",
+  "tierClassification": "Director I",
+  "tierClassificationAm": "ዳይሬክተር I",
+  "typicalRoles": "...",
   "typicalRolesAm": "...",
   "rankOrder": 19
 }
 ```
-Response: `{ "success": true, "data": { "id": 19 } }`
-Edge case — duplicate grade number:
+
+**Response (201):**
 ```json
-{ "success": false, "error": { "code": "DUPLICATE_GRADE_NUMBER", "message": "Grade number already exists." } }
+{ "success": true, "data": { "id": 19 } }
 ```
 
-#### Grades — edit
+**Errors:** `DUPLICATE_GRADE_NUMBER` (409).
 
-`PATCH /admin/api/v1/grades/:id`
-Request (any subset): `{ "bandLabel": "Grades 18+", "bandLabelAm": "...", "typicalRolesAm": "...", "isActive": true }`
-Response: `{ "success": true, "data": { "id": 19, "updated": true } }`
-Edge case — grade has active users and admin tries to deactivate:
+**Roles:** `super_admin`, `platform_admin`.
+
+#### PATCH /admin/api/v1/grades/:id
+
+**Request body (any subset):**
 ```json
-{ "success": false, "error": { "code": "GRADE_HAS_ACTIVE_USERS", "message": "Cannot deactivate a grade with active users." } }
+{ "isActive": false }
 ```
-*Note: editing a grade never modifies banks or locations.*
 
-#### Staff & User Status Management
+**Errors:** `GRADE_HAS_ACTIVE_USERS` (422) if deactivating a grade with active users.
 
-`PATCH /admin/api/v1/users/:id/status`
-Request: `{ "isActive": false, "reason": "Duplicate account, merged with #4521" }`
-Response: `{ "success": true, "data": { "userId": 4599, "isActive": false } }`
+**Roles:** `super_admin`, `platform_admin`.
 
-### 6.10 Reporting & Monitoring
+#### GET /admin/api/v1/staff
 
-#### `GET /admin/api/v1/dashboard/summary`
-Response:
+List staff accounts. **Roles:** `super_admin` only.
+
+**Query params:** `?page=1&pageSize=50&isActive=true`
+
+**Response:**
 ```json
 {
   "success": true,
-  "data": { "activeUsers": 1834, "totalInterests": 3021, "totalPurchases": 412, "revenueEtb": 206000 }
+  "data": {
+    "staff": [
+      {
+        "id": 1,
+        "fullName": "Super Admin",
+        "email": "superadmin@lateral.local",
+        "roleId": 1,
+        "roleName": "super_admin",
+        "preferredLanguage": "en",
+        "isActive": true,
+        "lastLoginAt": "2026-07-18T...",
+        "createdAt": "2026-07-01T..."
+      }
+    ],
+    "page": 1,
+    "pageSize": 50,
+    "totalResults": 1
+  }
 }
 ```
 
-#### `GET /admin/api/v1/reports/revenue?from=2026-07-01&to=2026-07-15&bankId=1`
-Response:
+#### GET /admin/api/v1/staff/roles
+
+List available roles (for the staff creation form). **Roles:** `super_admin` only.
+
+**Response:**
 ```json
-{ "success": true, "data": { "revenueEtb": 62500, "purchaseCount": 125, "byBank": [ { "bankId": 1, "revenueEtb": 62500 } ] } }
+{
+  "success": true,
+  "data": {
+    "roles": [
+      { "id": 1, "name": "super_admin" },
+      { "id": 2, "name": "platform_admin" },
+      { "id": 3, "name": "finance_officer" },
+      { "id": 4, "name": "support_officer" }
+    ]
+  }
+}
 ```
 
-#### `GET /admin/api/v1/reports/export?type=revenue&format=xlsx`
-Response: `200 OK`, `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, binary file stream.
+#### POST /admin/api/v1/staff
 
-#### `GET /admin/api/v1/users?q=&bankId=&regionId=&zoneId=&gradeId=&isActive=&page=&pageSize=`
-Search/list users for monitoring. `q` matches phone, telegram_username, branch_name.
+Create a new staff account. **Roles:** `super_admin` only.
 
-Response:
+**Request body:**
+```json
+{
+  "fullName": "Jane Doe",
+  "email": "jane@lateral.local",
+  "password": "SecurePassword123!",
+  "roleName": "platform_admin",
+  "preferredLanguage": "en"
+}
+```
+
+**Response (201):**
+```json
+{ "success": true, "data": { "id": 5 } }
+```
+
+**Errors:** `VALIDATION_FAILED` (400) if `roleName` isn't one of the 4 known roles. `DUPLICATE_NICKNAME` (409) (code reused for duplicate email — would be `DUPLICATE_EMAIL` in a future refactor).
+
+---
+
+### 6.10 Admin user monitoring & reports
+
+#### GET /admin/api/v1/users
+
+Search/list users for monitoring. Phone is masked (SEC-006).
+
+**Query params:** `?q=jane&bankId=1&regionId=16&zoneId=25&gradeId=7&isActive=true&page=1&pageSize=25`
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
     "users": [
       {
-        "id": 4521, "phone": "+251911***344", "telegramUsername": "abebe_kebede",
-        "bankId": 1, "bankName": "Commercial Bank of Ethiopia",
-        "regionId": 16, "regionName": "Oromia",
-        "zoneId": 25, "zoneName": "East Shewa",
-        "branchName": "Adama Main Branch",
-        "gradeId": 7, "gradeLabel": "Grade 7 — Junior Professional",
-        "isActive": true, "interestsCount": 2, "purchasesCount": 0,
-        "createdAt": "2026-07-10T08:00:00Z", "lastActivityAt": "2026-07-16T06:14:00Z"
+        "id": 42,
+        "telegramId": 987654321,
+        "telegramUsername": "tester",
+        "phone": "+251911***000",
+        "bankId": 1,
+        "currentLocationId": 25,
+        "gradeId": 7,
+        "isActive": true,
+        "createdAt": "2026-07-18T..."
       }
     ],
-    "page": 1, "pageSize": 25, "totalResults": 1834
+    "page": 1,
+    "pageSize": 25,
+    "totalResults": 1
   }
 }
 ```
-*Note: phone is masked in list view; full phone only on the detail view, and only if the staff caller has Support Officer role or higher (SEC-006 audit log fires).*
 
-#### `GET /admin/api/v1/users/:id`
-Per-user monitor view — registration timeline, interest history, purchases made, purchases of this user by others, last feed refresh, last notification sent.
+**Roles:** all staff (read-only for support).
 
-Response:
+#### GET /admin/api/v1/users/:id
+
+Per-user monitor view. Returns full phone (SEC-006 — staff callers permitted).
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
-    "id": 4521,
+    "id": 42,
     "profile": {
       "bankName": "Commercial Bank of Ethiopia",
-      "regionName": "Oromia", "zoneName": "East Shewa",
+      "regionName": "Oromia",
+      "zoneName": "East Shewa",
       "branchName": "Adama Main Branch",
-      "gradeLabel": "Grade 7 — Junior Professional",
-      "preferredLanguage": "am", "isActive": true, "createdAt": "2026-07-10T08:00:00Z"
+      "gradeLabel": "Grade 7 — Officer I",
+      "preferredLanguage": "en",
+      "isActive": true,
+      "createdAt": "2026-07-18T...",
+      "phone": "+251911000000"
     },
     "stats": {
-      "interestsCount": 2, "purchasesMadeCount": 0,
-      "purchasesOfMeCount": 3, "totalSpentEtb": 0,
-      "totalRevealedByOthersEtb": 1500
+      "interestsCount": 3,
+      "purchasesMadeCount": 5,
+      "purchasesOfMeCount": 2,
+      "totalSpentEtb": 2500,
+      "totalRevealedByOthersEtb": 1000
     },
     "activity": [
-      { "at": "2026-07-16T06:14:00Z", "type": "feed_view" },
-      { "at": "2026-07-15T09:00:00Z", "type": "purchase", "targetUserId": 9931, "amountEtb": 500 },
-      { "at": "2026-07-10T08:12:00Z", "type": "registration_complete" }
+      { "at": "2026-07-18T...", "type": "registration_complete" },
+      { "at": "2026-07-17T...", "type": "purchase", "targetUserId": 43, "amountEtb": 500 }
     ]
   }
 }
 ```
 
-#### `GET /admin/api/v1/system/health`
-Queue depths, webhook delivery success rate (last 1h), payment success rate (last 24h), MySQL/Redis ping, active sessions count. For ops monitoring, not end-user data.
+**Errors:** `NOT_FOUND` (404).
+
+**Roles:** all staff.
+
+#### PATCH /admin/api/v1/users/:id/status
+
+Activate/deactivate a user.
+
+**Request body:**
+```json
+{ "isActive": false, "reason": "Spam reports" }
+```
+
+**Response:**
+```json
+{ "success": true, "data": { "userId": 42, "isActive": false } }
+```
+
+**Roles:** `super_admin`, `platform_admin`, `support_officer`.
+
+#### POST /admin/api/v1/notifications/broadcast
+
+Send a promotion to a chosen audience (§6.8 of SRS). Enqueues a `broadcast-notifications` fan-out job.
+
+**Request body:**
+```json
+{
+  "segmentFilter": {
+    "scope": "all"
+  },
+  "message": {
+    "en": "Maintenance tonight",
+    "am": "የጥገና ስራ ዛሬ ማታ"
+  }
+}
+```
+
+`segmentFilter.scope` is one of:
+- `"all"` — every active user
+- `"bank"` — active users in one bank (requires `bankId`)
+- `"region"` — active users whose `current_location_id` resolves under `regionId` (optional `bankId`)
+- `"zone"` — active users whose `current_location_id = zoneId` (optional `regionId` for cross-validation)
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": { "queuedRecipients": 1234 },
+  "message": "Broadcast queued for 1234 recipients."
+}
+```
+
+**Errors:** `FILTER_INCOMPLETE` (422) if `scope='bank'` without `bankId`, etc. `INVALID_ZONE` (422) if `scope='zone'` but `zoneId` references a region. `ZONE_REGION_MISMATCH` (422) if `zoneId` doesn't belong to `regionId` when both supplied. `EMPTY_SEGMENT` (422) if the segment resolves to zero users.
+
+**Roles:** `super_admin`, `platform_admin`.
+
+#### GET /admin/api/v1/dashboard/summary
+
+Top-line metrics.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "activeUsers": 1234,
+    "totalInterests": 5678,
+    "totalPurchases": 90,
+    "revenueEtb": 45000
+  }
+}
+```
+
+**Roles:** all staff.
+
+#### GET /admin/api/v1/reports/revenue
+
+Revenue report (overall + per-bank breakdown).
+
+**Query params:** `?from=2026-07-01&to=2026-07-31&bankId=1`
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "revenueEtb": 45000,
+    "purchaseCount": 90,
+    "byBank": [
+      { "bankId": 1, "revenueEtb": 30000, "purchaseCount": 60 },
+      { "bankId": 2, "revenueEtb": 15000, "purchaseCount": 30 }
+    ]
+  }
+}
+```
+
+**Roles:** `super_admin`, `finance_officer`.
+
+#### GET /admin/api/v1/reports/export?type=revenue&format=xlsx|csv
+
+Export the revenue report. `format=xlsx` returns a real OOXML workbook via `exceljs` (`answers.md` §A) with two sheets (Summary + By Bank), bold/formatted headers, ETB currency formatting, and UTF-8 Amharic-safe rendering. `format=csv` (or omit `format`) returns a lightweight CSV stream.
+
+**Response (xlsx):**
+- Status: `200`
+- `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- `Content-Disposition: attachment; filename="revenue.xlsx"`
+- Body: OOXML binary (starts with `PK\x03\x04` zip magic bytes)
+
+**Response (csv):**
+- Status: `200`
+- `Content-Type: text/csv`
+- `Content-Disposition: attachment; filename="revenue.csv"`
+- Body:
+  ```
+  metric,value
+  revenueEtb,45000
+  purchaseCount,90
+  bank_1_revenueEtb,30000
+  bank_2_revenueEtb,15000
+  ```
+
+**Roles:** `super_admin`, `finance_officer`.
+
+#### GET /admin/api/v1/system/health
+
+Ops monitoring — DB/Redis/audit-log ping, queue depths. The `auditLog` probe does a synthetic write-and-verify on `audit_logs` (tagged `action='healthcheck'` for cleanup) to catch a broken audit pipeline (`answers.md` §I).
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "mysql": "ok",
+    "redis": "ok",
+    "auditLog": "ok",
+    "activeStaffSessions": 3,
+    "queuedNotifications": 12
+  }
+}
+```
+
+**Roles:** all staff.
+
+---
+
+### 6.11 Chapa payment webhook
+
+#### POST /api/v1/webhooks/chapa
+
+Chapa payment confirmation webhook (`answers.md` §1). Unauthenticated — verified via HMAC-SHA256 of the raw body with the shared `CHAPA_WEBHOOK_SECRET`.
+
+The handler:
+1. Verifies the `Chapa-Signature` header (timing-safe HMAC comparison).
+2. Parses the payload to extract the `tx_ref` (which carries our `purchase:<purchaseId>` identifier), `amount`, `currency`, `status`.
+3. Delegates to `purchaseService.handleSuccessfulPayment()` which marks the payment + purchase complete and enqueues the post-processing work (notification + audit) on the `payment-webhook-processing` queue.
+
+**Request headers:**
+```
+Content-Type: application/json
+Chapa-Signature: <hex HMAC-SHA256 of the raw body>
+```
+
+**Request body (Chapa success event):**
+```json
+{
+  "event": "charge.success",
+  "data": {
+    "tx_ref": "purchase:100",
+    "amount": "500",
+    "currency": "ETB",
+    "status": "success",
+    "reference": "chapa-ref-abc123"
+  }
+}
+```
+
+**Response (success):**
+```json
+{ "ok": true }
+```
+
+**Response (unknown payload — Chapa shouldn't retry):**
+```json
+{ "ok": true, "ignored": true }
+```
+
+**Response (signature mismatch):**
+- Status: `401`
+```json
+{
+  "success": false,
+  "error": { "code": "INVALID_TOKEN", "message": "Authentication required." }
+}
+```
+
+**Idempotency (FR-PAY-002):** if the same `provider_charge_id` (`tx_ref`) is delivered twice, the second delivery is a no-op — the payment row already has `status='completed'`.
 
 ---
 
 ## 7. Redis Usage
 
-| Purpose | Key pattern | TTL / notes |
+| Key pattern | TTL | Purpose |
 |---|---|---|
-| Bot onboarding/interest wizard session (FSM) | `bot:session:{telegramId}` | 24h TTL; holds `{step, languageChoice, pendingBankId, pendingRegionId, pendingZoneId, branchName, neighborhood, pendingGradeBand, selectedInterestLocationIds:[...]}` |
-| Feed cache | `feed:{bankId}:{userId}:{locationId}:{adj}:{page}` | 30–60s; bypassed by `?fresh=true` |
-| Rate limiting (per-user) | `rl:{route}:{userId}` | Sliding window via `rate-limiter-flexible` (SEC-008) |
-| Rate limiting (admin login) | `rl:admin-login:{ip}` | Locks out after N failures (SEC-005) |
-| Purchase double-charge lock | `lock:purchase:{buyerId}:{targetId}` | Short-lived mutex around purchase creation to close the race window before the DB unique constraint applies |
-| Closure rebuild debounce | `debounce:closure-rebuild` | Coalesces bursts of admin location edits |
-| Session store (admin) | `session:{staffId}` | Backing store for admin idle-timeout (SEC-009) |
+| `bot:session:{telegramId}` | 24h (`BOT_SESSION_TTL_HOURS`) | Onboarding wizard + interest selection state |
+| `feed:{bankId}:{userId}:{locationId}:{adjacencyRange}:{page}` | 30s | Marketplace feed cache (FR-MATCH-007) |
+| `lock:purchase:{buyerId}:{targetId}` | 5s | Race-window mutex for double-charge prevention (BR-006) |
+| `rl:admin-login:{ipAddress}` | 15min after 5th failure | SEC-005 per-IP admin login lockout |
+| `rl:user-feed:{userId}` | 60s | SEC-008 per-user feed rate limit (60 req/min) |
+| `rl:user-purchase:{userId}` | 60s | SEC-008 per-user purchase rate limit (10 req/min) |
+| `healthz` | 5s | Used by the system-health probe |
+| `bull:digest-notifications:*` | — | BullMQ queue (daily digest) |
+| `bull:broadcast-notifications:*` | — | BullMQ queue (admin-triggered fan-out) |
+| `bull:payment-webhook-processing:*` | — | BullMQ queue (Chapa webhook post-processing) |
 
-**BullMQ queues:**
-- `digest-notifications` — daily repeatable job; for each active user, computes "new qualifying
-  interests since last digest" and enqueues one notification-send task per user (batched, not a
-  per-request loop).
+**BullMQ queues** (`answers.md` §B):
+- `digest-notifications` — daily repeatable job; for each active user, computes "new qualifying interests since last digest" and enqueues a notification-send.
 - `broadcast-notifications` — admin-triggered ad hoc fan-out to all users or a filtered segment.
-- `payment-webhook-processing` — decouples Telegram webhook receipt (must ack fast) from
-  downstream work (mark payment completed, create purchase reveal, send confirmation, write audit
-  log), with retry/backoff on transient failures.
+- `payment-webhook-processing` — decouples Chapa webhook receipt (must ack fast) from downstream work (notification send + audit log), with retry/backoff on transient failures.
+
+In test env / no-`REDIS_URL` dev, all the above fall back to in-memory equivalents (cache → `Map`, queues → inline synchronous execution).
 
 ---
 
-## 8. Payment Integration (FR-PAY-001…005)
+## 8. Payment Integration (Chapa)
 
-**Provider-agnostic by design (payment instrument remains an open item — SRS §16, Section 15
-below).** `PaymentService` must be implemented behind a provider interface —
-`createInvoice(purchase)`, `verifyWebhook(req)`, `parseSuccessfulPayment(payload)` — with a
-`TelegramStarsProvider` as the only concrete implementation for now. Core `PurchaseService` logic
-(Section 6.7, this section) must call only the interface, never Stars-specific request/response
-shapes directly, so a `ChapaProvider` (or others) can be added later purely as a new adapter — no
-changes to `purchases`/`payments` schema (already provider-agnostic via `payments.provider` and
-`raw_payload JSON`) or to calling code.
+`answers.md` §1 — off-platform Chapa checkout. The bot/Mini App deep-links the user out to a Chapa-hosted checkout page; Chapa's webhook confirms payment back to our `/api/v1/webhooks/chapa` endpoint.
 
-Flow:
-1. User selects a feed entry → `POST /purchases` creates a `purchases` row in a pre-payment state
-   and a corresponding `payments` row (`status='pending'`).
-2. Server calls Telegram's invoice API (Stars or a configured provider — see Open Item below) to
-   generate an invoice for the bot/Mini App to present.
-3. Telegram sends a `pre_checkout_query` webhook — the server must answer within Telegram's
-   timeout window, re-validating the purchase is still valid (not already paid, target still
-   active).
-4. On `successful_payment`, the webhook handler:
-   - Looks up `payments` by `telegram_charge_id` — if already `completed`, no-op (idempotency,
-     FR-PAY-002).
-   - Marks `payments.status = 'completed'`.
-   - Marks the linked `purchases` row as finalized, populating `revealed_fields`.
-   - Enqueues a payment-confirmation notification (FR-PAY-004).
-   - Writes an `audit_logs` entry.
-5. The reveal endpoint (feed / `GET /purchases/:id`) checks for a completed `payments` row before
-   including contact fields in the response (SEC-010).
+### 8.1 Provider interface
 
-**Open item carried from SRS §16 / §5.7:** confirm whether Telegram Stars or a third-party
-provider (e.g., Chapa) will be used before implementing `FR-PAY-001` — Telegram's current
-digital-goods policy may require Stars for in-bot/Mini-App digital purchases. The `payments.provider`
-column is designed to support either without a schema change.
+`src/providers/chapa.js` exposes a `ChapaProvider` extending the `PaymentProvider` interface with three methods:
+
+| Method | Purpose |
+|---|---|
+| `createInvoice({ purchaseId, amountEtb, currency })` | Calls Chapa's `/transaction/initialize` endpoint with the secret key in the `Authorization: Bearer` header. Returns Chapa's `checkout_url`. The `tx_ref` field carries `purchase:<purchaseId>` so the webhook can route the confirmation back to the right purchase. In test env (no secret key), returns a deterministic fake URL. |
+| `verifyWebhook(req)` | HMAC-SHA256 verification of the `Chapa-Signature` header against the raw body. Reads the secret fresh from env on each call so tests can toggle it. An empty secret means "no validation" (test default). |
+| `parseSuccessfulPayment(payload)` | Extracts `tx_ref` (→ `chargeId`), `amount`, `currency`, and the raw `data` object from Chapa's webhook body. Returns `null` for non-success events. |
+
+### 8.2 Purchase + payment flow
+
+1. **`POST /api/v1/purchases`** — `purchaseService.initiatePurchase()`:
+   - Acquires the Redis mutex `lock:purchase:{buyerId}:{targetId}` (5s TTL — closes the race window before the DB constraint applies).
+   - Validates: target exists, active, same bank (BR-001).
+   - Creates `purchases` row (`revealed_fields` set, `payment_id` NULL).
+   - Creates `payments` row (`provider='chapa'`, `status='pending'`, `provider_charge_id` NULL).
+   - Calls `provider.createInvoice()` → returns `checkoutUrl`.
+   - Returns `{ purchaseId, paymentId, status: 'pending', checkoutUrl }`.
+
+2. **User completes payment on Chapa's hosted page.**
+
+3. **Chapa POSTs to `/api/v1/webhooks/chapa`** — `purchaseService.handleSuccessfulPayment()`:
+   - Verifies the HMAC signature.
+   - Parses `tx_ref` → `purchaseId`.
+   - Idempotency check: if a payment with this `provider_charge_id` already has `status='completed'`, return early (FR-PAY-002).
+   - Updates `payments` row: `status='completed'`, `provider_charge_id=tx_ref`, `raw_payload=full Chapa data`.
+   - Enqueues a `payment-webhook-processing` job carrying `{ paymentId, purchaseId, chargeId, amountEtb }`.
+
+4. **Worker consumes the `payment-webhook-processing` job** (`src/queues/processors/paymentWebhook.js`):
+   - Creates a `payment_confirmation` notification for the buyer.
+   - Writes an `audit_logs` row (`action='payment.completed'`).
+
+5. **Next time the buyer loads `/marketplace/feed`**, the candidate's card shows `unlocked: true` and includes the `contact` object (SEC-010 lift).
+
+### 8.3 Why off-platform Chapa (not Telegram Stars)?
+
+Per `answers.md` §1, the accepted trade-off is that the bot/Mini App may not be eligible for listing to mobile users for this digital-goods flow, since it isn't routed through Telegram's native Stars checkout (`sendInvoice`/Bot Payments API). Chapa was chosen as the off-platform provider for local payment method coverage (Ethiopian cards, telebirr, CBE Birr, etc.).
+
+### 8.4 Revealed fields on purchase
+
+Per `answers.md` §3 — all four contact fields ship on reveal:
+
+```json
+{
+  "telegramUsername": "target_user",
+  "phone": "+251911000108",
+  "branchName": "Adama Main Branch",
+  "neighborhood": "Bole Road"
+}
+```
+
+The `purchases.revealed_fields` JSON column supports any subset, so this stays config-flippable without a migration if the business wants to reveal fewer fields later.
 
 ---
 
 ## 9. Notification System (FR-NOT-001…004)
 
-- **Digest job** (`digest-notifications`, scheduled daily): for each active user, query
-  `transfer_interests` created since `users.last_digest_at` whose `location_id` closure-matches
-  the user's `current_location_id`, within their bank and grade adjacency (same predicate as the
-  live feed query, scoped by `created_at > last_digest_at`). If any qualifying rows exist, enqueue
-  a notification task and update `last_digest_at`.
-- **Broadcast**: admin-composed message + segment filter (all users, or filtered by bank/region/
-  grade); fanned out via the same queue infrastructure to avoid blocking the API process.
-  Audience-resolution SQL by scope:
-  ```sql
-  -- scope = 'all'
-  SELECT id FROM users WHERE is_active = TRUE;
+### 9.1 Notification types
 
-  -- scope = 'bank'
-  SELECT id FROM users WHERE is_active = TRUE AND bank_id = :bankId;
+| `type` | Trigger | Channel |
+|---|---|---|
+| `digest` | Daily repeatable job (6:00 AM by default) — per-user summary of new matching interests since `last_digest_at` | telegram |
+| `broadcast` | Admin-triggered ad-hoc fan-out (`POST /admin/api/v1/notifications/broadcast`) | telegram |
+| `payment_confirmation` | Chapa webhook confirms a successful payment | telegram |
+| `registration_confirmation` | (Skipped — the onboarding flow's `profile_created` response IS the confirmation; a separate `notifications` row would be redundant per `answers.md` Part 3) | — |
 
-  -- scope = 'region'
-  SELECT u.id FROM users u
-  JOIN location_ancestors la ON la.descendant_id = u.current_location_id
-  WHERE u.is_active = TRUE
-    AND la.ancestor_id = :regionId
-    AND (:bankId IS NULL OR u.bank_id = :bankId);
+### 9.2 Daily digest job
 
-  -- scope = 'zone'
-  SELECT id FROM users
-  WHERE is_active = TRUE
-    AND current_location_id = :zoneId
-    AND (:bankId IS NULL OR bank_id = :bankId);
-  ```
-- **Transactional**: registration confirmation, payment confirmation — enqueued inline at the
-  point of the triggering event.
-- **Channels**: Telegram Bot messages are primary; email/SMS are optional fallback channels
-  (config per notification type), useful mainly for staff/admin alerts.
+`notificationService.runDailyDigest()` is the queue processor body for the `digest-notifications` queue. For each active user, it:
+
+1. Queries `transfer_interests` created since the user's `last_digest_at` whose `location_id` closure-matches the user's `current_location_id`, within their bank and grade adjacency (same predicate as the live feed query per §5).
+2. If count > 0: creates a `digest` notification row + updates `last_digest_at`.
+3. Returns `{ processedUsers, sentDigests }`.
+
+The scheduler registers the repeatable job on the `digest-notifications` queue using the cron from `DIGEST_SCHEDULE_CRON` (default `0 6 * * *` — 6:00 AM every day, server timezone).
+
+### 9.3 Broadcast fan-out
+
+`notificationService.broadcast()` resolves the recipient user-id list synchronously (a fast read), then enqueues a single `broadcast-notifications` job carrying the resolved list + message. The worker processor inserts one `notifications` row per user.
+
+Segment scopes: `all`, `bank`, `region` (closure-match), `zone` (exact `current_location_id` match).
 
 ---
 
 ## 10. Security (SEC-001…011)
 
-| Requirement | Implementation |
-|---|---|
-| SEC-001 HTTPS/TLS | Terminate TLS at load balancer/reverse proxy; enforce `Strict-Transport-Security` |
-| SEC-002 Password hashing | `bcrypt` or `argon2id` for `staff.password_hash` |
-| SEC-003 initData verification | Validate Telegram WebApp `initData` HMAC using the bot token per Telegram's documented algorithm, on every Mini App request |
-| SEC-004 RBAC enforcement | Central `requireRole([...])` Express middleware on every Admin PWA/API route |
-| SEC-005 Login rate limiting | Redis-backed limiter + exponential lockout on repeated admin login failures |
-| SEC-006 Audit logging | Write-through `AuditService.log()` call inside purchase, payment, and all admin mutation handlers |
-| SEC-007 Webhook integrity | Verify Telegram webhook secret token header; process `successful_payment` idempotently keyed on `telegram_charge_id` |
-| SEC-008 API rate limiting | `rate-limiter-flexible` with Redis store on feed and purchase endpoints specifically (scraping/abuse vectors) |
-| SEC-009 Admin session timeout | Configurable idle timeout on staff JWT/session (e.g., 30 min) |
-| SEC-010 Contact hiding | Query-level field suppression — contact fields are only ever selected/serialized when a completed `purchases` row exists for that buyer/target pair |
-| SEC-011 Router-Token Binding | Every request is gated by a `router-scope` check that matches the token type to the router: staff JWTs only authenticate on `/admin/api/v1/*`; user JWTs / Telegram initData only authenticate on `/api/v1/*`. A stolen staff token replayed against `/api/v1/*` (or vice versa) returns `401 invalid_token_for_router` before any handler runs. This is server-side and independent of CORS, which only constrains browsers. |
+| Code | Control | Implementation |
+|---|---|---|
+| SEC-002 | Staff password hashing | `bcryptjs` with 10 rounds |
+| SEC-003 | Telegram initData verification | `src/utils/telegramInitData.js` — HMAC-SHA256 validation of `X-Telegram-Init-Data` header on Mini App requests; bot gateway path allowed as trusted fallback |
+| SEC-004 | RBAC middleware | `src/middlewares/rbac.js` — `requireRole(...allowedRoles)` reads `req.authPayload.roleName` |
+| SEC-005 | Admin login rate limit | Per-IP: 5 failed attempts → 15-min lockout (Redis-backed) |
+| SEC-006 | Audit logging | Every sensitive action writes an `audit_logs` row. Phone masked in admin user list view; full phone only on detail view for staff callers. |
+| SEC-007 | Webhook integrity | Chapa webhook verified via HMAC-SHA256 of raw body with shared secret (timing-safe comparison) |
+| SEC-008 | API rate limiting | `rate-limiter-flexible`: feed 60 req/min per user, purchase 10 req/min per user |
+| SEC-009 | Admin idle timeout | 30-min staff access JWT hard expiry (backstop) + 10-min frontend idle logout (`ADMIN_IDLE_TIMEOUT_MINUTES`, documentation-only) + 7-day refresh token (`answers.md` §D) |
+| SEC-010 | Contact hiding | Marketplace feed omits `telegramUsername`, `phone`, `branchName`, `neighborhood` until a completed purchase exists |
+| SEC-011 | Router-token binding | `scope: 'user'` JWTs rejected on `/admin/api/v1/*` and vice versa — server-side, independent of CORS |
 
-Additional standard hardening: `helmet` middleware, parameterized queries / query builder (no raw
-string concatenation), input validation (e.g., `zod` or `joi`) on every mutating endpoint,
-`express-mysql-session` or JWT with short expiry + refresh for admin auth.
+### 10.1 Refresh token security (`answers.md` §D)
+
+- Refresh tokens are **opaque** (not JWTs) — 48 random bytes, base64url-encoded.
+- Stored in `staff_refresh_tokens` as a **SHA-256 hash** (never plaintext) — a DB leak doesn't immediately compromise active sessions.
+- **Rotation on use**: every `/auth/refresh` call revokes the old refresh token and issues a new one.
+- **Reuse detection**: if a revoked token is presented again, ALL tokens for that staff member are revoked (RFC 6749 §10.4 defensive pattern — possible theft).
+- **Revocation triggers**: logout (single token), password change (all tokens), staff deactivation via FR-ADM-003 (all tokens), reuse detection (all tokens).
+
+### 10.2 Audit log healthcheck (`answers.md` §I)
+
+`GET /admin/api/v1/system/health` includes an `auditLog` probe that:
+1. Does a synthetic `auditService.log({ actorType: 'system', action: 'healthcheck', ... })` write.
+2. Verifies the row is readable (catches silent insert failures where the service swallowed the error but didn't actually persist).
+3. Reports `'ok'` or `'down'`.
+
+Healthcheck rows are tagged `action='healthcheck'` so a periodic cleanup job can purge them without touching real audit entries.
 
 ---
 
 ## 11. RBAC Matrix (FR-RBAC-001…003)
 
-| Capability | Super Admin | Platform Admin | Finance/Reconciliation | Support Officer | Employee |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Manage reference data (banks/locations/grades) | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Manage staff accounts & roles | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Activate/deactivate user accounts | ✅ | ✅ | ❌ | ✅ | ❌ |
-| Send broadcast notifications | ✅ | ✅ | ❌ | ❌ | ❌ |
-| View revenue/payment reports | ✅ | ❌ | ✅ | ❌ | ❌ |
-| View activity/interest reports & monitor users | ✅ | ✅ | ✅ | ✅ (read-only) | ❌ |
-| View audit logs | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Own profile, interests, feed, purchases | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Capability | super_admin | platform_admin | finance_officer | support_officer |
+|---|---|---|---|---|
+| Manage reference data (banks/locations/grades) | ✅ | ✅ | ❌ | ❌ |
+| Manage staff & roles | ✅ | ❌ | ❌ | ❌ |
+| Activate/deactivate user accounts | ✅ | ✅ | ❌ | ✅ |
+| Send broadcast notifications | ✅ | ✅ | ❌ | ❌ |
+| View revenue/payment reports | ✅ | ❌ | ✅ | ❌ |
+| View activity/interest reports & monitor users | ✅ | ✅ | ✅ | ✅ (read-only) |
+| Dashboard summary | ✅ | ✅ | ✅ | ✅ (read-only) |
+| System health | ✅ | ✅ | ✅ | ✅ |
+
+Defined in `src/middlewares/rbac.js` as the `Capabilities` map. Each admin route uses `requireRole(...Capabilities.X)` to enforce.
 
 ---
 
 ## 12. Non-Functional Implementation Notes
 
-- **Feed response < 3s @ 1,000+ users:** indexed `location_ancestors` join + Redis feed cache +
-  MySQL connection pooling (`mysql2` pool, sized to `worker_count * pool_per_worker`).
-- **Reveal confirmation < 5s of payment confirmation:** webhook handler does the minimal
-  synchronous work (mark payment + purchase complete) and defers notification send + audit
-  logging to the queue.
-- **Payment status reflected within 1 minute:** webhook-driven (push), not polling.
-- **99% uptime target:** run `api` behind a load balancer with ≥2 instances; MySQL with automated
-  daily backups (SRS §11 Backup); Redis used only for cache/queue/rate-limit/session state
-  (nothing there is the sole source of truth) so a Redis restart doesn't lose durable data —
-  BullMQ jobs should be safe to replay.
-- **Scalability to 1,000+ users:** queue-based fan-out (Section 7) and closure-table matching
-  (Section 5) are the two load-bearing scalability decisions in this design.
+- **Reveal confirmation < 5s of payment confirmation**: the Chapa webhook handler does the minimal synchronous work (mark payment + purchase complete) and defers notification send + audit logging to the `payment-webhook-processing` queue.
+- **Payment status reflected within 1 minute**: webhook-driven (push), not polling.
+- **99% uptime target**: run `api` behind a load balancer with ≥2 instances; MySQL with automated daily backups (SRS §11 Backup); Redis used only for cache/queue/rate-limit/session state (nothing there is the sole source of truth) so a Redis restart doesn't lose durable data — BullMQ jobs should be safe to replay.
+- **Scalability to 1,000+ users**: queue-based fan-out (§7) and closure-table matching (§5) are the two load-bearing scalability decisions in this design.
+- **Sub-200ms feed response time**: feed cached in Redis for 30s; closure-table `JOIN` is O(1) per row regardless of hierarchy depth.
 
 ---
 
 ## 13. Environment Configuration
 
-```
-# Server
-PORT=3000
-NODE_ENV=production
+See [`.env.example`](./.env.example) for the full list with placeholder values and one-line comments per variable. Every variable listed there is actually read by the codebase (the list was built by scanning for `process.env.*` usage, not by guessing).
 
-# MySQL
-DB_HOST=
-DB_PORT=3306
-DB_NAME=lateral_transfer
-DB_USER=
-DB_PASSWORD=
-DB_POOL_MIN=2
-DB_POOL_MAX=20
+### 13.1 Critical variables
 
-# Redis
-REDIS_URL=
+| Var | Default | Notes |
+|---|---|---|
+| `NODE_ENV` | `development` | `test` → SQLite in-memory + inline queue fallback; `production` → MySQL + BullMQ workers required |
+| `PORT` | `3000` | API server port |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | — | MySQL connection (dev/prod); ignored in test env |
+| `REDIS_URL` | — | Required for `worker` + `scheduler` processes; if unset, the API process falls back to in-memory cache + inline queue execution (dev/test only) |
+| `JWT_SECRET` | `dev-jwt-secret-change-me` | **Change in prod** — signs all JWTs + hashes refresh tokens |
+| `ADMIN_JWT_EXPIRES_IN` | `30m` | Staff access token hard expiry (SEC-009 backstop) |
+| `ADMIN_REFRESH_TOKEN_EXPIRES_IN` | `7d` | Staff refresh token TTL (`answers.md` §D) |
+| `ADMIN_IDLE_TIMEOUT_MINUTES` | `10` | Frontend-enforced idle timeout (documentation only — backend doesn't enforce; see `answers.md` §D) |
+| `TELEGRAM_BOT_TOKEN` | — | Required for initData verification (SEC-003) |
+| `CHAPA_SECRET_KEY` / `CHAPA_PUBLIC_KEY` / `CHAPA_WEBHOOK_SECRET` / `CHAPA_API_BASE` | — | Chapa provider config (`answers.md` §1) |
+| `MINIAPP_ORIGIN` / `ADMIN_PWA_ORIGIN` | `*` | CORS origins per router (SEC-011) |
+| `DEFAULT_GRADE_ADJACENCY_RANGE` | `1` | BR-003 ±1 rank default |
+| `DIGEST_SCHEDULE_CRON` | `0 6 * * *` | Daily digest cron (consumed by `scheduler.js`) |
+| `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD` | `superadmin@lateral.local` / `ChangeMe123!` | First-run bootstrap |
+| `PAYMENT_AMOUNT_ETB` | `500` | Per-reveal price |
 
-# Telegram
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_WEBHOOK_SECRET=
-TELEGRAM_PAYMENTS_PROVIDER_TOKEN=   # or leave unset if using Telegram Stars
+### 13.2 Test-only flags
 
-# Auth
-JWT_SECRET=
-ADMIN_SESSION_TTL_MINUTES=30
-
-# CORS / Router Origins
-MINIAPP_ORIGIN=https://miniapp.yourdomain.com
-ADMIN_PWA_ORIGIN=https://admin.yourdomain.com
-
-# Notifications (optional fallback channels)
-SMS_GATEWAY_API_KEY=
-EMAIL_SMTP_URL=
-
-# Business config
-DEFAULT_GRADE_ADJACENCY_RANGE=1    # meaningful globally — all banks share one 1-18 grade scale
-DIGEST_SCHEDULE_CRON=0 6 * * *      # daily 06:00
-BOT_SESSION_TTL_HOURS=24
-```
-
-Recommended migration tooling: `knex` or `Prisma Migrate` for versioned schema changes; the
-geography seed script (Section 4.1) runs once via `npm run seed:geography`, idempotent on re-run
-(upsert by `name` + `parent_id`).
+| Var | Notes |
+|---|---|
+| `TEST_SKIP_INIT_DATA` | Set to `'1'` to skip Telegram initData verification in tests (only honored when `NODE_ENV === 'test'`) |
 
 ---
 
 ## 14. Deployment Notes
 
-- Containerize `api` and `worker` as separate images/services from the same codebase
-  (`CMD ["node", "src/server.js"]` vs `CMD ["node", "src/worker.js"]`) so they scale
-  independently.
-- Admin PWA is a static SPA build, served either from a CDN/static host or from the same Express
-  app behind `/admin`; it only ever talks to `/admin/api/v1/*`.
-- Use a process manager (PM2) or a container orchestrator (Docker Compose for staging,
-  Kubernetes/ECS for production) with health checks on `GET /healthz` (DB + Redis ping).
-- Telegram webhook URL must be HTTPS and registered via `setWebhook`; keep
-  `TELEGRAM_WEBHOOK_SECRET` validated on every incoming webhook request.
+### 14.1 Process topology
+
+Run three separate processes (per §1.1):
+
+```bash
+# API server (behind a load balancer, ≥2 instances for HA)
+npm start                # or: npm run dev
+
+# BullMQ worker (≥1 instance; scale independently of API)
+npm run worker
+
+# Scheduler (single instance — repeatable jobs are idempotent on the repeat key,
+# but running multiple schedulers just duplicates the enqueue)
+npm run scheduler
+```
+
+All three share the same MySQL + Redis instances.
+
+### 14.2 Database setup
+
+```bash
+# Create the database (one-time)
+mysql -u root -p -e "CREATE DATABASE lateral_transfer CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# Run migrations
+npm run migrate
+
+# Seed reference data (banks, geography, grades, super admin)
+npm run seed
+```
+
+### 14.3 Containerization
+
+Per `answers.md` §B, containerize `worker` separately from `api`:
+
+```dockerfile
+# API container
+CMD ["node", "src/server.js"]
+
+# Worker container
+CMD ["node", "src/worker.js"]
+
+# Scheduler container
+CMD ["node", "src/scheduler.js"]
+```
+
+All three share the same image; only the `CMD` differs.
+
+### 14.4 Health checks
+
+- `GET /healthz` (unauthenticated) — for load balancer liveness probes. Returns `{ ok: true }`.
+- `GET /admin/api/v1/system/health` (staff-authenticated) — for ops monitoring. Includes DB/Redis/audit-log status + queue depths.
 
 ---
 
-## 15. Open Items Affecting Backend Implementation
+## 15. Localization (i18n)
 
-Carried from SRS §16, updated with decisions confirmed July 16, 2026:
+### 15.1 Reference data translation (schema)
 
-1. **Payment instrument** (Stars vs. third-party e.g. Chapa) — **still open.** Affects which
-   `PaymentService` provider adapter ships first, and `payments.provider` values; schema already
-   supports either. Build behind the provider interface described in Section 8 so this can be
-   decided without blocking the rest of Section 6.7/8.
-2. **Location/grade change after registration — RESOLVED: self-service.** No
-   `profile_change_requests` table. `PUT /me` (Section 6.5) directly mutates
-   `current_location_id`/`grade_id` with the same validation used during onboarding
-   (`ZONE_REGION_MISMATCH`). `branch_name`/`neighborhood` were already self-service.
-3. **Exact revealed fields on purchase** (username / phone / branch, or combination) — already
-   modeled as `purchases.revealed_fields JSON`, so this is a business-config decision, not a
-   schema change.
-4. **Digest frequency configurable per user** — still open, v1 stays daily-only. If required
-   later, add `users.digest_frequency ENUM('daily','weekly') DEFAULT 'daily'` and branch the
-   scheduler query accordingly; omitted from the v1 schema pending confirmation.
-5. **Grade scheme — RESOLVED: shared, industry-standard matrix, not per-bank.** See Section
-   3.1/3.3/4.3. This also resolves the previously-open question of how grade-adjacency (BR-003)
-   could be compared consistently across banks with different grade scales — it can't be an
-   issue anymore since every bank now shares one 1–18 rank scale.
+Every reference-data table has parallel English + Amharic columns:
 
----
+| Table | English column | Amharic column |
+|---|---|---|
+| `banks` | `name` | `name_am` |
+| `locations` | `name` | `name_am` |
+| `grades` | `band_label`, `tier_classification`, `typical_roles` | `band_label_am`, `tier_classification_am`, `typical_roles_am` |
 
-## 16. Localization (i18n)
+All `_am` columns are `NOT NULL` — enforced from day 1 per `backend.md` §16.1 (deployment gate: Amharic strings must be finalized and approved by the business/HR before the initial production seed is run).
 
-Two distinct problems, handled differently — don't conflate them:
+### 15.2 Message catalog (API/bot response text)
 
-1. **Reference data has two names** (a bank name, a region/zone name, a grade band/tier label) —
-   this is translated *content*, stored per-row.
-2. **API/bot messages are templated** (`"Selected bank is not available."`, `"Welcome back!
-   Use /feed..."`) — this is a *message catalog* keyed by a stable code, resolved per-request.
+`src/i18n/en.json` and `src/i18n/am.json` hold the message catalogs. Keys are stable identifiers (`INVALID_CREDENTIALS`, `ZONE_REGION_MISMATCH`, etc.); values are the localized strings.
 
-### 16.1 Reference data translation (schema)
+The `INVALID_CREDENTIALS` message was reworded in `answers.md` §G:
 
-Non-nullable `_am` columns sit alongside the existing English columns directly in the base schema
-(Section 3.2: `banks.name_am`, `locations.name_am`, `grades.band_label_am` /
-`tier_classification_am` / `typical_roles_am`, `staff.preferred_language`) — parallel columns, not
-a separate translations table, since the reference data is small (31 banks, 119 locations, 18
-grades) and a join on every matching/feed query would cost more than it's worth. 
+- **English:** `"The email or password you entered is incorrect."`
+- **Amharic:** `"የገቡት ኢሜይል ወይም የይለፍ ቃል የተሳሳተ ነው።"` (best-effort draft — see §16)
 
-Because we are enforcing Amharic as a first-class citizen from day one, all seed scripts (`scripts/seed-geography.js`, `scripts/seed-grades.js`) explicitly map Amharic fields from the source JSON into the database. The database enforces `NOT NULL` on these columns, ensuring incomplete seed data fails fast during deployment rather than silently rendering English.
+The phrasing is deliberately generic (doesn't reveal whether the email or the password was wrong) to avoid user enumeration.
 
-(`users.preferred_language` also already lives in Section 3.2 — it's the column this whole system
-resolves against for end users.)
+### 15.3 Resolving `lang` per request
 
-**Resolution rule, applied at the query/serialization layer, never left to the client:**
-```sql
-SELECT IF(:lang = 'am', name_am, name) AS name FROM banks;
-```
-Every endpoint that returns a bank/location/grade name (onboarding pickers, `PUT /me`'s zone
-validation echo, feed's `matchedLocation`, `matchWarning`'s embedded place names, notification
-digests) returns **one already-resolved `name` field**, not `{name, nameAm}` pairs — the server
-picks the right string once, so the bot and Mini App never have to carry their own copy of the
-reference data or decide which language to render. 
+- **User routes**: `req.user.preferred_language` (set during onboarding, mutable via `PUT /me`).
+- **Admin routes**: `req.staff.preferred_language` (set during staff creation).
+- **Bot gateway / onboarding**: read from the Redis session (`sess.languageChoice`).
+- **Default**: `'en'` if nothing is set.
 
-**Content ownership:** `grades-seed.json`, `seed-data.json` (banks and locations) must have the Amharic strings finalized and approved by the business/HR before the initial production seed is run. The schema strictness (`NOT NULL`) acts as a deployment gate to guarantee this.
+### 15.4 Notification/broadcast messages
 
-### 16.2 Message catalog (API/bot response text)
-
-Every hardcoded English string in this document's request/response examples (Section 6) is a
-**catalog entry**, not literal text to ship as-is. Two files, one key set:
-
-```
-/i18n/en.json   { "CONTACT_NOT_SELF": "Please share your own contact, not someone else's.",
-                  "onboarding.welcome": "Welcome! Please choose your language:", ... }
-/i18n/am.json   { "CONTACT_NOT_SELF": "እባክዎ የራስዎን እውቂያ ያጋሩ፣ የሌላ ሰው አይደለም።",
-                  "onboarding.welcome": "እንኳን ደህና መጡ! እባክዎ ቋንቋ ይምረጡ:", ... }
-```
-
-`LocalizationService.t(key, lang, params?)` is the single call site every response builder and
-the central error-handling middleware goes through. **The `code` in the error envelope
-(`{"error":{"code":"CONTACT_NOT_SELF", "message": "..."}}`) stays a stable, English, uppercase
-identifier always** — it's what the bot/Mini App branch logic on. Only `message` (and any
-top-level success `message`) is resolved through the catalog. This matches the existing envelope
-shape in Section 6.0 exactly — no breaking change, `message` was already documented as "optional
-human-readable note," it just now has a language behind it instead of being hardcoded English.
-
-### 16.3 Resolving `lang` per request
-
-- **Bot/onboarding, before a `users` row exists:** `POST /onboarding/language` (Section 6.3) is
-  already the very first real step — persist the choice into the Redis wizard session
-  (`bot:session:{telegramId}.languageChoice`, Section 7) immediately, so every subsequent
-  onboarding response — bank list, region list, error messages, all of it — resolves against it
-  from that point on, not just the final profile.
-- **At `profile_created`:** the session's `languageChoice` is written to `users.preferred_language`
-  — no separate step, it's already been captured.
-- **Every authenticated request after that** (Mini App, bot commands post-registration):
-  `lang = users.preferred_language`, looked up once per request alongside the existing auth check.
-- **Admin PWA:** `lang = staff.preferred_language` (added above) for the "key admin screens"
-  SRS §1.1 requires in Amharic; most internal admin tooling can stay English-only by default
-  (`en`) since Support Officers/Finance are staff, not the bilingual end-user base — flag to the
-  business which specific screens need Amharic if not all of them.
-- **Changing language later:** self-service, same pattern as Decision #3 (Section 0) —
-  `PUT /me` (Section 6.5) accepts `preferredLanguage` alongside branch/zone/grade updates. Add
-  `"preferredLanguage": "am"` to that endpoint's already-mutable field set.
-
-### 16.4 Notification/broadcast messages
-
-`POST /admin/api/v1/notifications/broadcast` (Section 6.8) already takes `{"message": {"en": "...",
-"am": "..."}}` — that's the correct pattern, unchanged. The digest job (Section 9) picks
-`message.am` or `message.en` per recipient from `users.preferred_language` at send time, same
-resolution as everything else — no separate logic needed there.
+Broadcasts carry both `en` and `am` copies in the `message` field — the client renders whichever matches the user's `preferred_language`. Reference-data names (`bankName`, `zoneName`, etc.) are resolved through the catalog at query time via the `lang` parameter on repository methods.
 
 ---
 
-- **Banks:** 31 rows seeded from the provided list (`id`, `name`, `name_am`, `nickname`, `swift_code`,
-  `year_established`, `is_active`) — see `seed-data.json → banks`. Amharic names are populated.
-- **Shared geography:** 14 top-level Regions/Chartered Cities (Addis Ababa, Dire Dawa, Oromia,
-  Amhara, Tigray, Somali, Sidama, South West Ethiopia Peoples', South Ethiopia, Central Ethiopia,
-  Afar, Benishangul-Gumuz, Gambela, Harari) and 105 child Zones/Subcities/Special Woredas — see
-  `seed-data.json → regions[].zones_subcities`. Amharic names are populated.
-- **Grade matrix:** 18 rows seeded from `grades-seed.json` (Ethiopian Banking Grade Matrix),
-  shared across all banks — see `grades-seed.json → grades` and Section 4.3. Amharic names and roles are populated.
-- **Not covered by seed data (captured at registration instead):** each user's exact branch name
-  and neighborhood (free text, Section 6.3).
+## 16. Known Issues & Translation Review
+
+Per `backend.md` §16.1, Amharic (`name_am`) strings must be finalized and approved by the business/HR before the initial production seed is run. The following items are flagged for translation review:
+
+### 16.1 `INVALID_CREDENTIALS` Amharic (`src/i18n/am.json`)
+
+The new English copy is `"The email or password you entered is incorrect."` (`answers.md` §G). The Amharic string `"የገቡት ኢሜይል ወይም የይለፍ ቃል የተሳሳተ ነው።"` is a best-effort draft — needs review by your translator.
+
+### 16.2 Geography seed Amharic (`src/db/seed_lib/seed-data.geography.json`)
+
+The vendor-supplied 111-zone dataset (`answers.md` §E) did not include Amharic translations. Existing translations from the prior 91-zone seed were reused where names overlapped (~80 zones); the remaining ~30 newly-added zones have best-effort Amharic drafts that need translator review before production seeding.
+
+### 16.3 Pre-existing lint errors (not blocking)
+
+20 `no-unused-vars` errors exist in files unrelated to the `answers.md` decisions (`src/repositories/*`, `src/middlewares/rateLimit.js`, `src/services/reportingService.js`, `src/db/config.js`, `src/utils/logger.js`, `scripts/seed-geography.js`, `tests/matching.ranking.test.js`, `tests/security.test.js`, `tests/setup.js`). These are pre-existing — none were introduced by the `answers.md` changes. They should be cleaned up in a separate maintenance pass.

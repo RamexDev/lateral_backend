@@ -39,7 +39,9 @@ module.exports = {
     secret: isTest ? 'test-jwt-secret' : required('JWT_SECRET', 'dev-jwt-secret-change-me'),
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
     adminExpiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '30m',
+    adminRefreshExpiresIn: process.env.ADMIN_REFRESH_TOKEN_EXPIRES_IN || '7d',
     adminSessionTtlMinutes: Number(process.env.ADMIN_SESSION_TTL_MINUTES || 30),
+    adminIdleTimeoutMinutes: Number(process.env.ADMIN_IDLE_TIMEOUT_MINUTES || 10),
   },
 
   cors: {
@@ -50,7 +52,17 @@ module.exports = {
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
-    paymentsProviderToken: process.env.TELEGRAM_PAYMENTS_PROVIDER_TOKEN || '',
+  },
+
+  // Chapa — off-platform checkout provider (replaces Telegram Stars as of answers.md §1).
+  // The bot/Mini App deep-links the user out to Chapa's hosted checkout page; Chapa's
+  // webhook confirms payment back to our /api/v1/webhooks/chapa endpoint.
+  chapa: {
+    apiBase:
+      process.env.CHAPA_API_BASE || 'https://api.chapa.co/v1',
+    secretKey: process.env.CHAPA_SECRET_KEY || '',
+    publicKey: process.env.CHAPA_PUBLIC_KEY || '',
+    webhookSecret: process.env.CHAPA_WEBHOOK_SECRET || '',
   },
 
   payments: {

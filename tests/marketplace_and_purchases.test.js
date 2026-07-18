@@ -5,7 +5,7 @@
  */
 const request = require('supertest');
 const { app, registerUser, addInterest, getRefs } = require('./helpers');
-const db = require('./db');
+const { User, Payment } = require('../src/db/models');
 
 describe('Marketplace feed (§6.6) — /marketplace/feed', () => {
   let refs;
@@ -174,7 +174,7 @@ describe('Purchases (§6.7) — /purchases + payments webhook', () => {
     expect(res.body.data.purchaseId).toBeGreaterThan(0);
     expect(res.body.data.paymentId).toBeGreaterThan(0);
     expect(res.body.data.status).toBe('pending');
-    expect(res.body.data.telegramInvoiceLink).toMatch(/^https:\/\/t\.me\/invoice\//);
+    expect(res.body.data.checkoutUrl).toMatch(/^https:\/\/checkout\.chapa\.co\//);
   });
 
   it('rejects a duplicate purchase (BR-006 ALREADY_PURCHASED)', async () => {
@@ -211,7 +211,7 @@ describe('Purchases (§6.7) — /purchases + payments webhook', () => {
       phone: '+251911000106',
       zoneName: 'West Shewa',
     });
-    await db('users').where({ id: target.user.id }).update({ is_active: false });
+    await User.update({ is_active: false }, { where: { id: target.user.id } });
 
     const res = await request(app)
       .post('/api/v1/purchases')
@@ -240,16 +240,15 @@ describe('Purchases (§6.7) — /purchases + payments webhook', () => {
       .send({ targetUserId: target.user.id });
 
     const webhookRes = await request(app)
-      .post('/api/v1/webhooks/telegram/payments')
+      .post('/api/v1/webhooks/chapa')
       .send({
-        update_id: 900050,
-        message: {
-          successful_payment: {
-            telegram_payment_charge_id: `tg_charge_test_${purchase.body.data.purchaseId}`,
-            total_amount: 5000,
-            currency: 'ETB',
-            invoice_payload: `purchase:${purchase.body.data.purchaseId}`,
-          },
+        event: 'charge.success',
+        data: {
+          tx_ref: `purchase:${purchase.body.data.purchaseId}`,
+          amount: '500',
+          currency: 'ETB',
+          status: 'success',
+          reference: `chapa-ref-test-${purchase.body.data.purchaseId}`,
         },
       });
     expect(webhookRes.status).toBe(200);
@@ -282,25 +281,25 @@ describe('Purchases (§6.7) — /purchases + payments webhook', () => {
       .send({ targetUserId: target.user.id });
 
     const payload = {
-      update_id: 900051,
-      message: {
-        successful_payment: {
-          telegram_payment_charge_id: `tg_charge_dup_${purchase.body.data.purchaseId}`,
-          total_amount: 5000,
-          currency: 'ETB',
-          invoice_payload: `purchase:${purchase.body.data.purchaseId}`,
-        },
+      event: 'charge.success',
+      data: {
+        tx_ref: `purchase:${purchase.body.data.purchaseId}`,
+        amount: '500',
+        currency: 'ETB',
+        status: 'success',
+        reference: `chapa-ref-dup-${purchase.body.data.purchaseId}`,
       },
     };
-    await request(app).post('/api/v1/webhooks/telegram/payments').send(payload);
-    const second = await request(app).post('/api/v1/webhooks/telegram/payments').send(payload);
+    await request(app).post('/api/v1/webhooks/chapa').send(payload);
+    const second = await request(app).post('/api/v1/webhooks/chapa').send(payload);
 
     expect(second.status).toBe(200);
     expect(second.body.ok).toBe(true);
 
-    const payments = await db('payments')
-      .where({ telegram_charge_id: `tg_charge_dup_${purchase.body.data.purchaseId}` })
-      .select('*');
+    const payments = await Payment.findAll({
+      where: { provider_charge_id: `purchase:${purchase.body.data.purchaseId}` },
+      raw: true,
+    });
     expect(payments).toHaveLength(1);
     expect(payments[0].status).toBe('completed');
   });

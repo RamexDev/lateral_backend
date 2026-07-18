@@ -1,8 +1,13 @@
 /**
- * Payment model — Telegram Bot Payments integration record.
- * See backend.md §3.2 (payments) and §6.7 (payments webhooks).
+ * Payment model — provider-agnostic payment record (§3.2, §6.7, answers.md §1).
  *
- * telegram_charge_id UNIQUE: idempotency key for FR-PAY-002.
+ * provider_charge_id UNIQUE: idempotency key for FR-PAY-002. Stores Chapa's
+ * `tx_ref` (format: "purchase:<purchaseId>") or any future provider's canonical
+ * charge id.
+ *
+ * The `provider` column defaults to 'chapa' (the off-platform checkout provider
+ * chosen in answers.md §1). The column was originally named `telegram_charge_id`
+ * when Telegram Stars was the default; renamed when the default provider switched.
  */
 const { DataTypes } = require('sequelize');
 const sequelize = require('../sequelize');
@@ -16,7 +21,7 @@ module.exports = sequelize.define(
       autoIncrement: true,
     },
     purchase_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
-    telegram_charge_id: {
+    provider_charge_id: {
       type: DataTypes.STRING(100),
       allowNull: true,
       unique: true,
@@ -24,7 +29,7 @@ module.exports = sequelize.define(
     provider: {
       type: DataTypes.STRING(30),
       allowNull: false,
-      defaultValue: 'telegram_stars',
+      defaultValue: 'chapa',
     },
     amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
     currency: { type: DataTypes.STRING(10), allowNull: false },

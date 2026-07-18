@@ -4,7 +4,7 @@
  */
 const request = require('supertest');
 const { app, registerUser, getRefs } = require('./helpers');
-const db = require('./db');
+const { User } = require('../src/db/models');
 
 describe('Onboarding wizard (§6.3)', () => {
   let telegramIdCounter = 1000000;
@@ -194,7 +194,7 @@ describe('Onboarding wizard (§6.3)', () => {
       expect(user.is_active).toBe(1);
       expect(user.preferred_language).toBe('en');
 
-      const row = await db('users').where({ id: user.id }).first();
+      const row = await User.findOne({ where: { id: user.id }, raw: true });
       expect(row.branch_name).toBe('Adama Main Branch');
     });
 

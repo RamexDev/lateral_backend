@@ -43,8 +43,18 @@ router.get(
 );
 
 /**
- * GET /admin/api/v1/reports/export?type=revenue&format=xlsx
- * Stub — returns a CSV-style plaintext in v1 (would be a real xlsx stream in production).
+ * GET /admin/api/v1/reports/export?type=revenue&format=xlsx|csv
+ *
+ * `format=xlsx` → real OOXML workbook via exceljs (answers.md §A):
+ *   - Two sheets: "Summary" (overall revenue + purchase count) and
+ *     "By Bank" (per-bank breakdown with bank names joined in).
+ *   - Bold/formatted headers, autofit column widths, ETB currency format
+ *     on amount cells.
+ *   - UTF-8 throughout so Amharic (name_am) renders correctly regardless
+ *     of the admin's Excel locale.
+ *
+ * `format=csv` (or omit `format`) → lightweight CSV stream (kept as a
+ * secondary option for quick CLI downloads / shell pipelines).
  */
 router.get('/export', requireRole(...Capabilities.viewRevenueReports), async (req, res, next) => {
   try {
@@ -53,7 +63,22 @@ router.get('/export', requireRole(...Capabilities.viewRevenueReports), async (re
       to: req.query.to,
       bankId: req.query.bankId,
     });
-    // Minimal CSV export (would use exceljs in production).
+    const format = (req.query.format || 'csv').toLowerCase();
+
+    if (format === 'xlsx') {
+      const buffer = await reportingService.buildRevenueXlsx(report);
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      res.setHeader(
+        'Content-Disposition',
+        'attachment; filename="revenue.xlsx"',
+      );
+      return res.status(200).send(buffer);
+    }
+
+    // Default: CSV (lightweight).
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="revenue.csv"');
     const lines = [
@@ -70,7 +95,7 @@ router.get('/export', requireRole(...Capabilities.viewRevenueReports), async (re
 
 /**
  * GET /admin/api/v1/system/health
- * Ops monitoring — DB/Redis ping, queue depths (§6.10).
+ * Ops monitoring — DB/Redis/audit-log ping, queue depths (§6.10, answers.md §I).
  */
 router.get('/health', requireRole(...Capabilities.viewUserReports), async (req, res, next) => {
   try {

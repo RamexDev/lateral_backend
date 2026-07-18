@@ -1,19 +1,20 @@
 /**
- * NotificationService — digest, broadcast, transactional notifications (§9).
+ * NotificationService — digest, broadcast, transactional notifications (§9, answers.md §B).
  *
- * In v1 we don't ship BullMQ workers — broadcasts and transactional notifications
- * are written directly to the `notifications` table. The `digest-notifications`
- * repeatable job is exposed as a callable function `runDailyDigest()` that the
- * scheduler would invoke (or tests can call directly).
+ * Broadcasts + transactional notifications are enqueued onto BullMQ queues
+ * (or run inline in test env via the queue layer's fallback). The daily digest
+ * is exposed as `runDailyDigest()` — the scheduler registers it as a
+ * repeatable BullMQ job on the digest-notifications queue.
  */
 const sequelize = require('../db/sequelize');
-const { QueryTypes, Op } = require('sequelize');
-const { User, TransferInterest } = require('../db/models');
+const { QueryTypes } = require('sequelize');
+const { User } = require('../db/models');
 const notificationRepo = require('../repositories/notificationRepository');
 const locationRepo = require('../repositories/locationRepository');
 const auditService = require('./auditService');
 const { ApiError } = require('../utils/ApiError');
 const i18n = require('./localizationService');
+const queues = require('../queues');
 
 async function listForUser(user, { limit = 50 } = {}) {
   const rows = await notificationRepo.listByUser(user.id, { limit });
@@ -115,27 +116,26 @@ async function broadcast({ segmentFilter, message }, actor) {
     throw ApiError.business('EMPTY_SEGMENT', i18n.t('EMPTY_SEGMENT', lang));
   }
 
-  // Build notification rows — one per user.
-  const payload = { message, scope };
-  const rows = userIds.map((uid) => ({
-    user_id: uid,
-    type: 'broadcast',
-    channel: 'telegram',
-    payload,
-    status: 'queued',
-  }));
-  const inserted = await notificationRepo.createMany(rows);
+  // Enqueue the fan-out as a single broadcast-notifications job carrying the
+  // resolved user-id list. The processor inserts one notification row per
+  // user. In test env this runs inline via the queue layer's fallback.
+  await queues.enqueue(queues.QUEUE_NAMES.BROADCAST, 'fanOut', {
+    userIds,
+    message,
+    scope,
+    actorId: actor?.id,
+  });
 
   await auditService.log({
     actorType: actor?.type || 'staff',
     actorId: actor?.id,
     action: 'admin.notification.broadcast',
     entityType: 'notification',
-    metadata: { scope, recipientCount: inserted, segmentFilter },
+    metadata: { scope, recipientCount: userIds.length, segmentFilter },
     ipAddress: actor?.ipAddress,
   });
 
-  return { queuedRecipients: inserted };
+  return { queuedRecipients: userIds.length };
 }
 
 /**

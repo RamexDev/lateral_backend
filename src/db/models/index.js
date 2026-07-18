@@ -19,6 +19,7 @@ const Payment = require('./Payment');
 const Notification = require('./Notification');
 const Role = require('./Role');
 const Staff = require('./Staff');
+const StaffRefreshToken = require('./StaffRefreshToken');
 const AuditLog = require('./AuditLog');
 
 // ─── Associations (§3.3 key relationships recap) ────────────────────────────
@@ -60,9 +61,11 @@ Payment.belongsTo(Purchase, { foreignKey: 'purchase_id', as: 'purchase' });
 // Notification → user
 Notification.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
 
-// Role → Staff
+// Role → Staff → StaffRefreshToken
 Role.hasMany(Staff, { foreignKey: 'role_id', as: 'staff' });
 Staff.belongsTo(Role, { foreignKey: 'role_id', as: 'role' });
+Staff.hasMany(StaffRefreshToken, { foreignKey: 'staff_id', as: 'refreshTokens' });
+StaffRefreshToken.belongsTo(Staff, { foreignKey: 'staff_id', as: 'staff' });
 
 // AuditLog is intentionally association-free (polymorphic actor/entity refs).
 
@@ -80,5 +83,6 @@ module.exports = {
   Notification,
   Role,
   Staff,
+  StaffRefreshToken,
   AuditLog,
 };

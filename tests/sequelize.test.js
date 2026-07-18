@@ -179,12 +179,13 @@ describe('Migrations produce the expected schema', () => {
     expect(uniqueCount).toBeGreaterThanOrEqual(1);
   });
 
-  it('payments has a unique index on telegram_charge_id (FR-PAY-002)', async () => {
+  it('payments has a unique index on provider_charge_id (FR-PAY-002)', async () => {
     const rows = await sequelize.query(
       `PRAGMA index_list('payments')`,
       { type: QueryTypes.SELECT },
     );
-    // The unique index on telegram_charge_id — SQLite names it via the column.
+    // The unique index on provider_charge_id — SQLite names it via the column.
+    // (Renamed from telegram_charge_id when the default provider switched to Chapa.)
     const uniqueIndexes = rows.filter((r) => r.unique === 1);
     expect(uniqueIndexes.length).toBeGreaterThanOrEqual(1);
   });
@@ -201,15 +202,16 @@ describe('Seeders populate reference data (§4)', () => {
     expect(sample.name_am).not.toBe('');
   });
 
-  it('seeds 14 regions and 91 zones (105 locations total — seed JSON count)', async () => {
-    // The spec text says "105 Zones/Subcities/Special Woredas (119 nodes total)" but
-    // the actual seed-data.geography.json has 91 zones. Flagged in CHANGELOG.md as
-    // an open spec question — the JSON is the source of truth for what gets seeded.
+  it('seeds 14 regions and 111 zones (125 locations total — vendor dataset, answers.md §E)', async () => {
+    // The current seed-data.geography.json is the vendor-supplied 111-zone dataset
+    // (14 regions + 111 zones = 125 nodes total). Replaces the prior 91-zone seed
+    // wholesale per answers.md §E. Amharic translations for ~30 newly-added zones
+    // are best-effort drafts flagged for translation review per backend.md §16.1.
     const regionCount = await models.Location.count({ where: { level_type: 'region' } });
     const zoneCount = await models.Location.count({ where: { level_type: 'zone_subcity' } });
     expect(regionCount).toBe(14);
-    expect(zoneCount).toBe(91);
-    expect(regionCount + zoneCount).toBe(105);
+    expect(zoneCount).toBe(111);
+    expect(regionCount + zoneCount).toBe(125);
   });
 
   it('seeds 18 grades with all _am columns populated', async () => {
@@ -257,10 +259,10 @@ describe('Seeders populate reference data (§4)', () => {
   });
 
   it('rebuilds the closure table after geography seeding (§4.2)', async () => {
-    // 105 self-rows (depth 0) + 91 ancestor-rows (depth 1, each zone → its region)
-    // = 196 total. (Math: 105 locations, 91 of which are zones with 1 ancestor each.)
+    // 125 self-rows (depth 0) + 111 ancestor-rows (depth 1, each zone → its region)
+    // = 236 total. (Math: 125 locations, 111 of which are zones with 1 ancestor each.)
     const count = await models.LocationAncestor.count();
-    expect(count).toBe(196);
+    expect(count).toBe(236);
 
     // Spot-check: East Shewa (zone) has itself at depth 0 and Oromia at depth 1.
     const eastShewa = await models.Location.findOne({

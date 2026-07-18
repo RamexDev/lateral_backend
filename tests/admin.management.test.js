@@ -289,7 +289,43 @@ describe('Admin reports & dashboard (§6.10)', () => {
     expect(res.text).toMatch(/metric,value/);
   });
 
-  it('system health returns DB + Redis status', async () => {
+  it('revenue export returns a real .xlsx workbook when format=xlsx (answers.md §A)', async () => {
+    const { token } = await loginStaff('super_admin');
+    const res = await request(app)
+      .get('/admin/api/v1/reports/export?type=revenue&format=xlsx')
+      .set('Authorization', `Bearer ${token}`)
+      .buffer(true)
+      .parse((response, callback) => {
+        // Collect the binary body as a Buffer (supertest parses as text by default).
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect(res.headers['content-disposition']).toMatch(/attachment; filename="revenue\.xlsx"/);
+    // OOXML files start with the PK zip magic bytes.
+    const buf = Buffer.isBuffer(res.body) ? res.body : Buffer.from(res.body);
+    expect(buf[0]).toBe(0x50); // 'P'
+    expect(buf[1]).toBe(0x4b); // 'K'
+    expect(buf.length).toBeGreaterThan(1000); // a real workbook is at least 1KB
+  });
+
+  it('system health returns DB + Redis + auditLog status (answers.md §I)', async () => {
+    const { token } = await loginStaff('super_admin');
+    const res = await request(app)
+      .get('/admin/api/v1/system/health')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveProperty('mysql');
+    expect(res.body.data).toHaveProperty('redis');
+    expect(res.body.data).toHaveProperty('auditLog');
+    expect(res.body.data.auditLog).toBe('ok');
+  });
+
+  it('system health returns DB + Redis status (legacy assertion)', async () => {
     const { token } = await loginStaff('super_admin');
     const res = await request(app)
       .get('/admin/api/v1/system/health')

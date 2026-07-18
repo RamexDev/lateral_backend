@@ -37,7 +37,7 @@
   "DUPLICATE_GRADE_NUMBER": "የእድር ቁጥር አስቀድሞ አለ።",
   "GRADE_HAS_ACTIVE_USERS": "ንቁ ተጠቃሚዎች ካሉት እድር ማደንዘዝ አይቻልም።",
   "REGION_LEVEL_MATCH_WARNING": "ይህ አመራር በ{region} ክልል ብቻ ፍላጎት አለው፣ በተከለለ {zone} ላይ አይደለም።",
-  "INVALID_CREDENTIALS": "የተሳሳተ ኢሜይል ወይም የይለፍ ቃል።",
+  "INVALID_CREDENTIALS": "የገቡት ኢሜይል ወይም የይለፍ ቃል የተሳሳተ ነው።",
   "ACCOUNT_DISABLED": "መለያው ተሰናክሏል።",
   "INVALID_TOKEN": "ማረጋገጫ ያስፈልግዎታል።",
   "INVALID_TOKEN_FOR_ROUTER": "ቶከን ለዚህ ሩተር ትክክል አይደለም።",

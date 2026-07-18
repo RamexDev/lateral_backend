@@ -4,7 +4,7 @@
  */
 const { Payment } = require('../db/models');
 const sequelize = require('../db/sequelize');
-const { QueryTypes, literal } = require('sequelize');
+const { QueryTypes } = require('sequelize');
 const TABLE = 'payments';
 
 module.exports = {
@@ -16,7 +16,7 @@ module.exports = {
 
   async findByChargeId(chargeId) {
     return Payment.findOne({
-      where: { telegram_charge_id: chargeId },
+      where: { provider_charge_id: chargeId },
       raw: true,
     });
   },

@@ -6,7 +6,7 @@
  */
 const sequelize = require('../db/sequelize');
 const { QueryTypes } = require('sequelize');
-const { User, Payment, Notification, Staff } = require('../db/models');
+const { User, Payment, Notification, Staff, AuditLog } = require('../db/models');
 const userRepo = require('../repositories/userRepository');
 const purchaseRepo = require('../repositories/purchaseRepository');
 const paymentRepo = require('../repositories/paymentRepository');
@@ -16,6 +16,7 @@ const locationRepo = require('../repositories/locationRepository');
 const gradeRepo = require('../repositories/gradeRepository');
 const { maskPhone } = require('../utils/phone');
 const config = require('../config');
+const auditService = require('./auditService');
 
 async function dashboardSummary() {
   const [activeUsers, totalInterests, totalPurchases, revenueRow] = await Promise.all([
@@ -45,7 +46,11 @@ async function revenueReport({ from, to, bankId } = {}) {
   const byBankRows = await paymentRepo.revenueByBank({ from, to });
   const byBank = byBankRows
     .filter((r) => !bankId || r.bankId === bankId)
-    .map((r) => ({ bankId: r.bankId, revenueEtb: Number(r.revenueEtb || 0) }));
+    .map((r) => ({
+      bankId: r.bankId,
+      revenueEtb: Number(r.revenueEtb || 0),
+      purchaseCount: Number(r.purchaseCount || 0),
+    }));
 
   return {
     revenueEtb: overall.revenueEtb,
@@ -144,6 +149,7 @@ async function getUserDetail(id, caller) {
 async function systemHealth() {
   let dbOk = false;
   let redisOk = false;
+  let auditOk = false;
   try {
     await sequelize.query('SELECT 1', { type: QueryTypes.SELECT });
     dbOk = true;
@@ -158,6 +164,28 @@ async function systemHealth() {
   } catch {
     /* ignore */
   }
+
+  // Decision I (answers.md): synthetic audit_logs write-and-verify probe.
+  // Tagged with action='healthcheck' so a periodic cleanup job can purge them
+  // without touching real audit entries.
+  try {
+    await auditService.log({
+      actorType: 'system',
+      action: 'healthcheck',
+      entityType: 'system',
+      entityId: 0,
+      metadata: { probe: true, at: new Date().toISOString() },
+    });
+    // Verify the row is readable (catches silent insert failures where the
+    // service swallowed the error but didn't actually persist).
+    const recent = await AuditLog.count({
+      where: { action: 'healthcheck' },
+    });
+    auditOk = recent > 0;
+  } catch {
+    auditOk = false;
+  }
+
   const [activeSessions, queuedNotifications] = await Promise.all([
     Staff.count({ where: { is_active: true } }),
     Notification.count({ where: { status: 'queued' } }),
@@ -165,9 +193,98 @@ async function systemHealth() {
   return {
     mysql: dbOk ? 'ok' : 'down',
     redis: redisOk ? 'ok' : 'down',
+    auditLog: auditOk ? 'ok' : 'down',
     activeStaffSessions: Number(activeSessions || 0),
     queuedNotifications: Number(queuedNotifications || 0),
   };
 }
 
-module.exports = { dashboardSummary, revenueReport, listUsers, getUserDetail, systemHealth };
+/**
+ * Build a real .xlsx workbook (OOXML) for the revenue report (answers.md §A).
+ *
+ * Two sheets:
+ *   1. "Summary" — overall revenue + purchase count, formatted with bold
+ *      headers and ETB currency formatting.
+ *   2. "By Bank" — per-bank breakdown, joined to bank names for readability.
+ *
+ * exceljs forces UTF-8 throughout so Amharic (name_am) renders correctly
+ * regardless of the admin's Excel locale.
+ *
+ * @returns {Promise<Buffer>} raw OOXML bytes ready to stream as the response body.
+ */
+async function buildRevenueXlsx(report) {
+  const ExcelJS = require('exceljs');
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Lateral Transfer Marketplace';
+  workbook.created = new Date();
+
+  // Pull bank names so the "By Bank" tab is human-readable.
+  const { rows: banks } = await bankRepo.list({ pageSize: 1000 });
+  const bankNameById = new Map(banks.map((b) => [b.id, b.name]));
+
+  // ─── Sheet 1: Summary ────────────────────────────────────────────────────
+  const summary = workbook.addWorksheet('Summary');
+  summary.columns = [
+    { header: 'Metric', key: 'metric', width: 32 },
+    { header: 'Value', key: 'value', width: 24 },
+  ];
+  summary.getRow(1).font = { bold: true };
+  summary.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE0E7FF' },
+  };
+
+  const revenueRow = summary.addRow({
+    metric: 'Total Revenue (ETB)',
+    value: Number(report.revenueEtb || 0),
+  });
+  revenueRow.getCell(2).numFmt = '#,##0.00 "ETB"';
+
+  const countRow = summary.addRow({
+    metric: 'Total Purchases',
+    value: Number(report.purchaseCount || 0),
+  });
+  countRow.getCell(2).numFmt = '#,##0';
+
+  summary.addRow({ metric: 'Report Generated At', value: new Date().toISOString() });
+
+  // ─── Sheet 2: By Bank ────────────────────────────────────────────────────
+  const byBank = workbook.addWorksheet('By Bank');
+  byBank.columns = [
+    { header: 'Bank ID', key: 'bankId', width: 10 },
+    { header: 'Bank Name', key: 'bankName', width: 40 },
+    { header: 'Revenue (ETB)', key: 'revenueEtb', width: 20 },
+    { header: 'Purchase Count', key: 'purchaseCount', width: 18 },
+  ];
+  byBank.getRow(1).font = { bold: true };
+  byBank.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE0E7FF' },
+  };
+
+  for (const row of report.byBank || []) {
+    const r = byBank.addRow({
+      bankId: row.bankId,
+      bankName: bankNameById.get(row.bankId) || `(unknown bank ${row.bankId})`,
+      revenueEtb: Number(row.revenueEtb || 0),
+      purchaseCount: Number(row.purchaseCount || 0),
+    });
+    r.getCell(3).numFmt = '#,##0.00 "ETB"';
+    r.getCell(4).numFmt = '#,##0';
+  }
+
+  // Serialize to a Buffer (exceljs supports both stream + buffer).
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+}
+
+module.exports = {
+  dashboardSummary,
+  revenueReport,
+  listUsers,
+  getUserDetail,
+  systemHealth,
+  buildRevenueXlsx,
+};

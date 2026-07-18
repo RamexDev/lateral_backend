@@ -92,6 +92,10 @@ const adminLoginSchema = z.object({
   password: z.string().min(1).max(255),
 });
 
+const adminRefreshSchema = z.object({
+  refreshToken: z.string().min(1).max(255),
+});
+
 const adminRevenueQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
@@ -123,6 +127,7 @@ module.exports = {
   adminUserStatusSchema,
   adminBroadcastSchema,
   adminLoginSchema,
+  adminRefreshSchema,
   adminRevenueQuerySchema,
   adminUserListQuerySchema,
 };

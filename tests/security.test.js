@@ -250,39 +250,47 @@ describe('BR-006 — Purchase double-charge guard', () => {
   });
 });
 
-describe('SEC-007 — Webhook integrity (payments webhook)', () => {
-  it('rejects a webhook with the wrong secret token when configured', async () => {
-    // Set a webhook secret and verify the rejection.
-    const originalSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-    process.env.TELEGRAM_WEBHOOK_SECRET = 'test-secret-xyz';
+describe('SEC-007 — Webhook integrity (Chapa payments webhook)', () => {
+  it('rejects a webhook with the wrong Chapa-Signature when configured', async () => {
+    const originalSecret = process.env.CHAPA_WEBHOOK_SECRET;
+    process.env.CHAPA_WEBHOOK_SECRET = 'test-secret-xyz';
 
     try {
       const res = await request(app)
-        .post('/api/v1/webhooks/telegram/payments')
-        .set('x-telegram-bot-api-secret-token', 'wrong-secret')
-        .send({ update_id: 1, message: { successful_payment: {} } });
+        .post('/api/v1/webhooks/chapa')
+        .set('chapa-signature', 'deadbeef')
+        .send({ event: 'charge.success', data: { tx_ref: 'purchase:1', status: 'success' } });
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe('INVALID_TOKEN');
     } finally {
-      if (originalSecret === undefined) delete process.env.TELEGRAM_WEBHOOK_SECRET;
-      else process.env.TELEGRAM_WEBHOOK_SECRET = originalSecret;
+      if (originalSecret === undefined) delete process.env.CHAPA_WEBHOOK_SECRET;
+      else process.env.CHAPA_WEBHOOK_SECRET = originalSecret;
     }
   });
 
-  it('accepts a webhook with the correct secret token', async () => {
-    const originalSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-    process.env.TELEGRAM_WEBHOOK_SECRET = 'test-secret-correct';
+  it('accepts a webhook with the correct Chapa-Signature', async () => {
+    const crypto = require('crypto');
+    const originalSecret = process.env.CHAPA_WEBHOOK_SECRET;
+    process.env.CHAPA_WEBHOOK_SECRET = 'test-secret-correct';
 
     try {
+      const body = { event: 'unknown.event', data: {} };
+      const rawBody = JSON.stringify(body);
+      const signature = crypto
+        .createHmac('sha256', 'test-secret-correct')
+        .update(rawBody)
+        .digest('hex');
+
       const res = await request(app)
-        .post('/api/v1/webhooks/telegram/payments')
-        .set('x-telegram-bot-api-secret-token', 'test-secret-correct')
-        .send({ update_id: 999, message: { text: 'unknown payload' } });
+        .post('/api/v1/webhooks/chapa')
+        .set('chapa-signature', signature)
+        .set('Content-Type', 'application/json')
+        .send(rawBody);
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(true);
     } finally {
-      if (originalSecret === undefined) delete process.env.TELEGRAM_WEBHOOK_SECRET;
-      else process.env.TELEGRAM_WEBHOOK_SECRET = originalSecret;
+      if (originalSecret === undefined) delete process.env.CHAPA_WEBHOOK_SECRET;
+      else process.env.CHAPA_WEBHOOK_SECRET = originalSecret;
     }
   });
 });

@@ -11,6 +11,7 @@ const { ApiError } = require('../utils/ApiError');
 const i18n = require('./localizationService');
 const auditService = require('./auditService');
 const locationService = require('./locationService');
+const refreshTokenService = require('./refreshTokenService');
 
 // ─── Banks ────────────────────────────────────────────────────────────────────
 
@@ -223,6 +224,37 @@ async function setUserStatus(id, { isActive, reason }, actor) {
   return { userId: id, isActive };
 }
 
+// ─── Staff status management (FR-ADM-003) ────────────────────────────────────
+//
+// Deactivating a staff member MUST revoke all their refresh tokens so they
+// can't silently refresh their access token after being deactivated (answers.md §D).
+
+async function setStaffStatus(id, { isActive }, actor) {
+  const staff = await staffRepo.findById(id);
+  if (!staff) throw ApiError.notFound('NOT_FOUND', i18n.t('NOT_FOUND', 'en'));
+
+  await staffRepo.update(id, { is_active: isActive });
+
+  if (isActive === false) {
+    // Revoke all refresh tokens — the deactivated staff member's current
+    // access token still works until it expires (≤ 30 min), but they can no
+    // longer mint new ones via the refresh path.
+    await refreshTokenService.revokeAllForStaff(id);
+  }
+
+  await auditService.log({
+    actorType: actor?.type || 'staff',
+    actorId: actor?.id,
+    action: 'admin.staff.status_change',
+    entityType: 'staff',
+    entityId: id,
+    metadata: { isActive },
+    ipAddress: actor?.ipAddress,
+  });
+
+  return { staffId: id, isActive };
+}
+
 module.exports = {
   createBank,
   updateBank,
@@ -234,4 +266,5 @@ module.exports = {
   listStaff,
   listRoles,
   setUserStatus,
+  setStaffStatus,
 };

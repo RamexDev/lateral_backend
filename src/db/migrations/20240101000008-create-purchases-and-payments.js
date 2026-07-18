@@ -4,7 +4,8 @@
  *
  * - purchases.revealed_fields JSON: which contact fields were unlocked
  * - purchases.uq_buyer_target enforces BR-006: never charge the same buyer twice for the same target
- * - payments.telegram_charge_id UNIQUE: idempotency key for FR-PAY-002
+ * - payments.provider_charge_id UNIQUE: idempotency key for FR-PAY-002 (provider-agnostic;
+ *   stores Chapa's tx_ref or any future provider's canonical charge id)
  *
  * Two-step: create purchases first, then payments, then add the purchases.payment_id FK
  * (chicken-and-egg otherwise).
@@ -63,11 +64,14 @@ module.exports = {
         references: { model: 'purchases', key: 'id' },
         onDelete: 'SET NULL',
       },
-      telegram_charge_id: { type: Sequelize.STRING(100), allowNull: true, unique: true },
+      // Provider-agnostic idempotency key. For Chapa this is the `tx_ref`
+      // (format: "purchase:<purchaseId>"). Renamed from `telegram_charge_id`
+      // when the default provider switched from Telegram Stars to Chapa.
+      provider_charge_id: { type: Sequelize.STRING(100), allowNull: true, unique: true },
       provider: {
         type: Sequelize.STRING(30),
         allowNull: false,
-        defaultValue: 'telegram_stars',
+        defaultValue: 'chapa',
       },
       amount: { type: Sequelize.DECIMAL(12, 2), allowNull: false },
       currency: { type: Sequelize.STRING(10), allowNull: false },

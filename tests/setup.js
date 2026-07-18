@@ -26,6 +26,7 @@ beforeAll(async () => {
     require('../src/db/migrations/20240101000007-create-transfer-interests'),
     require('../src/db/migrations/20240101000008-create-purchases-and-payments'),
     require('../src/db/migrations/20240101000009-create-notifications-and-audit-logs'),
+    require('../src/db/migrations/20240101000010-create-staff-refresh-tokens'),
   ];
   const Sequelize = sequelize.constructor;
   const queryInterface = sequelize.getQueryInterface();
@@ -63,6 +64,7 @@ beforeEach(async () => {
   const tables = [
     'audit_logs',
     'notifications',
+    'staff_refresh_tokens',
     'payments',
     'purchases',
     'transfer_interests',

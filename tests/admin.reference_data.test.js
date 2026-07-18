@@ -4,7 +4,7 @@
  */
 const request = require('supertest');
 const { app, loginStaff, getRefs } = require('./helpers');
-const db = require('./db');
+const { Grade, Location, User } = require('../src/db/models');
 
 describe('Admin banks (§6.9)', () => {
   it('super_admin can list banks', async () => {
@@ -81,9 +81,12 @@ describe('Admin banks (§6.9)', () => {
         nameAm: 'አክቲቭ ዩዘርስ ባንክ',
         nickname: `activeusers-${Date.now()}`,
       });
-    const grade = await db('grades').first();
-    const zone = await db('locations').where({ level_type: 'zone_subcity' }).first();
-    await db('users').insert({
+    const grade = await Grade.findOne({ raw: true });
+    const zone = await Location.findOne({
+      where: { level_type: 'zone_subcity' },
+      raw: true,
+    });
+    await User.create({
       telegram_id: Math.floor(Math.random() * 1e9),
       phone_number: '+251900000099',
       bank_id: newBank.body.data.id,

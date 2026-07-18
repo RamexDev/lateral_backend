@@ -4,13 +4,21 @@
  * User auth flow (§6.3): onboarding creates the users row, then AuthService
  * issues a user-scoped JWT. Subsequent /api/v1/* requests verify the JWT.
  *
- * Staff auth flow (§6.9, SEC-002, SEC-005): email + bcrypt-hashed password login,
- * rate-limited per IP, staff-scoped JWT issued on success.
+ * Staff auth flow (§6.9, SEC-002, SEC-005, SEC-009, answers.md §D):
+ *   - Login: email + bcrypt-hashed password, rate-limited per IP.
+ *   - On success: issue a 30-minute access JWT + a 7-day refresh token (stored
+ *     as a hash in staff_refresh_tokens).
+ *   - Refresh: POST /auth/refresh with the refresh token → new access token +
+ *     rotated refresh token (old one revoked).
+ *   - Logout: POST /auth/logout revokes the refresh token.
+ *   - Password change / staff deactivation (FR-ADM-003): revoke ALL refresh
+ *     tokens for the staff member.
  */
 const bcrypt = require('../utils/password');
 const jwtUtil = require('../utils/jwt');
 const staffRepo = require('../repositories/staffRepository');
 const userRepo = require('../repositories/userRepository');
+const refreshTokenService = require('./refreshTokenService');
 const { ApiError } = require('../utils/ApiError');
 const i18n = require('./localizationService');
 const auditService = require('./auditService');
@@ -31,7 +39,7 @@ function issueUserToken(user) {
 
 /**
  * Staff login — email + password. Rate-limited per IP (SEC-005).
- * Returns the staff record + signed JWT.
+ * Returns the staff record + 30-minute access JWT + 7-day refresh token.
  */
 async function loginStaff(email, password, ipAddress) {
   // SEC-005: simple per-IP rate limiter on admin login.
@@ -67,6 +75,10 @@ async function loginStaff(email, password, ipAddress) {
     lang: staff.preferred_language,
   });
 
+  // Issue a 7-day refresh token alongside the access token.
+  const { rawToken: refreshToken, expiresAt: refreshExpiresAt } =
+    await refreshTokenService.issue(staff.id);
+
   await auditService.log({
     actorType: 'staff',
     actorId: staff.id,
@@ -76,7 +88,51 @@ async function loginStaff(email, password, ipAddress) {
     ipAddress,
   });
 
-  return { staff, token };
+  return { staff, token, refreshToken, refreshExpiresAt };
+}
+
+/**
+ * Refresh a staff access token using a valid refresh token. Rotates the
+ * refresh token (old one revoked, new one issued).
+ */
+async function refreshStaffToken(rawRefreshToken) {
+  const { staff, rawToken: newRefreshToken, expiresAt } =
+    await refreshTokenService.consume(rawRefreshToken);
+
+  const roleRow = await staffRepo.findRoleByName(
+    (await staffRepo.findByIdWithRole(staff.id)).role_name,
+  );
+
+  const accessToken = jwtUtil.signStaffToken({
+    staffId: staff.id,
+    roleId: staff.role_id,
+    roleName: roleRow?.name,
+    lang: staff.preferred_language,
+  });
+
+  return {
+    staff,
+    token: accessToken,
+    refreshToken: newRefreshToken,
+    refreshExpiresAt: expiresAt,
+  };
+}
+
+/**
+ * Logout — revoke the supplied refresh token. Idempotent (no-op if unknown).
+ */
+async function logoutStaff(rawRefreshToken, staff, ipAddress) {
+  await refreshTokenService.revoke(rawRefreshToken);
+  if (staff) {
+    await auditService.log({
+      actorType: 'staff',
+      actorId: staff.id,
+      action: 'staff.logout',
+      entityType: 'staff',
+      entityId: staff.id,
+      ipAddress,
+    });
+  }
 }
 
 async function getStaffFromToken(token) {
@@ -155,6 +211,8 @@ async function clearLoginFailures(ipAddress) {
 module.exports = {
   issueUserToken,
   loginStaff,
+  refreshStaffToken,
+  logoutStaff,
   getStaffFromToken,
   getUserFromToken,
 };

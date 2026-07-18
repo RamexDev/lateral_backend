@@ -3,7 +3,7 @@
  */
 const request = require('supertest');
 const { app, registerUser, addInterest } = require('./helpers');
-const db = require('./db');
+const { User } = require('../src/db/models');
 
 describe('Profile (§6.5) — /me endpoints', () => {
   describe('GET /api/v1/me', () => {
@@ -52,7 +52,7 @@ describe('Profile (§6.5) — /me endpoints', () => {
         .set('Authorization', `Bearer ${token}`)
         .send({ gradeId: refs.grades[8].id });
       expect(res.status).toBe(200);
-      const updated = await db('users').where({ id: user.id }).first();
+      const updated = await User.findOne({ where: { id: user.id }, raw: true });
       expect(updated.grade_id).toBe(refs.grades[8].id);
     });
 
@@ -63,7 +63,7 @@ describe('Profile (§6.5) — /me endpoints', () => {
         .set('Authorization', `Bearer ${token}`)
         .send({ preferredLanguage: 'am' });
       expect(res.status).toBe(200);
-      const updated = await db('users').where({ id: user.id }).first();
+      const updated = await User.findOne({ where: { id: user.id }, raw: true });
       expect(updated.preferred_language).toBe('am');
     });
 

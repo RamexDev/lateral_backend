@@ -4,10 +4,13 @@
  *
  * Reference data IDs are looked up by NAME (not hardcoded) so tests don't break
  * if the seed data order changes.
+ *
+ * All data access uses the Sequelize models directly (Decision J, answers.md) —
+ * no Knex-like shim.
  */
 const request = require('supertest');
 const app = require('../src/app').createApp();
-const db = require('./db');
+const { Bank, Location, Grade, User, TransferInterest } = require('../src/db/models');
 const authService = require('../src/services/authService');
 const staffRepo = require('../src/repositories/staffRepository');
 const passwordUtil = require('../src/utils/password');
@@ -22,12 +25,26 @@ let refCache = null;
 async function getRefs() {
   if (refCache) return refCache;
 
-  const banks = await db('banks').select('id', 'nickname', 'name');
-  const regions = await db('locations').select('id', 'name').where({ level_type: 'region' });
-  const zones = await db('locations')
-    .select('id', 'name', 'parent_id')
-    .where({ level_type: 'zone_subcity' });
-  const grades = await db('grades').select('id', 'grade_number', 'band_label');
+  const [banks, regions, zones, grades] = await Promise.all([
+    Bank.findAll({
+      attributes: ['id', 'nickname', 'name'],
+      raw: true,
+    }),
+    Location.findAll({
+      attributes: ['id', 'name'],
+      where: { level_type: 'region' },
+      raw: true,
+    }),
+    Location.findAll({
+      attributes: ['id', 'name', 'parent_id'],
+      where: { level_type: 'zone_subcity' },
+      raw: true,
+    }),
+    Grade.findAll({
+      attributes: ['id', 'grade_number', 'band_label'],
+      raw: true,
+    }),
+  ]);
 
   refCache = {
     banks: Object.fromEntries(banks.map((b) => [b.nickname, b])),
@@ -99,7 +116,10 @@ async function registerUser(opts = {}) {
     .send({ telegramId, bandLabel: grade.band_label });
   await request(app).post('/api/v1/onboarding/grade').send({ telegramId, gradeId: grade.id });
 
-  const user = await db('users').where({ telegram_id: telegramId }).first();
+  const user = await User.findOne({
+    where: { telegram_id: telegramId },
+    raw: true,
+  });
   const token = authService.issueUserToken(user);
   return { user, token, refs };
 }
@@ -125,6 +145,7 @@ async function loginStaff(roleName = 'super_admin') {
     email,
     password,
     token: res.body.data.token,
+    refreshToken: res.body.data.refreshToken,
   };
 }
 
@@ -132,8 +153,8 @@ async function loginStaff(roleName = 'super_admin') {
  * Insert a transfer interest directly (skipping the wizard) for setup convenience.
  */
 async function addInterest(userId, locationId) {
-  const [id] = await db('transfer_interests').insert({ user_id: userId, location_id: locationId });
-  return id;
+  const row = await TransferInterest.create({ user_id: userId, location_id: locationId });
+  return row.id;
 }
 
 module.exports = { registerUser, loginStaff, addInterest, getRefs, app };

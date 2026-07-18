@@ -14,13 +14,13 @@
 const purchaseRepo = require('../repositories/purchaseRepository');
 const paymentRepo = require('../repositories/paymentRepository');
 const userRepo = require('../repositories/userRepository');
-const notificationRepo = require('../repositories/notificationRepository');
 const auditService = require('./auditService');
-const { getProvider } = require('../providers/telegramStars');
+const { getProvider } = require('../providers/chapa');
 const { ApiError } = require('../utils/ApiError');
 const i18n = require('./localizationService');
 const config = require('../config');
 const { getBackend } = require('../utils/cache');
+const queues = require('../queues');
 
 const REVEALED_FIELDS = {
   telegramUsername: true,
@@ -84,7 +84,7 @@ async function initiatePurchase(buyer, targetUserId) {
 
     await purchaseRepo.updatePaymentLink(purchaseId, paymentId);
 
-    const invoiceLink = await getProvider().createInvoice({
+    const checkoutUrl = await getProvider().createInvoice({
       purchaseId,
       amountEtb: config.payments.amountEtb,
       currency: config.payments.currency,
@@ -103,7 +103,7 @@ async function initiatePurchase(buyer, targetUserId) {
       purchaseId,
       paymentId,
       status: 'pending',
-      telegramInvoiceLink: invoiceLink,
+      checkoutUrl,
     };
   } finally {
     // Always release the lock — even on error.
@@ -134,35 +134,23 @@ async function handleSuccessfulPayment(payload) {
 
   await paymentRepo.update(payment.id, {
     status: 'completed',
-    telegram_charge_id: parsed.chargeId,
+    provider_charge_id: parsed.chargeId,
     raw_payload: JSON.stringify(parsed.rawPayload),
   });
 
-  // Enqueue payment-confirmation notification (synchronous insert in v1 — no BullMQ worker).
+  // Defer notification + audit to the payment-webhook-processing queue (§7).
+  // In test env the queue layer falls back to inline synchronous execution
+  // (see src/queues/index.js).
   if (payment.purchase_id) {
-    const purchase = await purchaseRepo.findById(payment.purchase_id);
-    if (purchase) {
-      await notificationRepo.create({
-        user_id: purchase.buyer_id,
-        type: 'payment_confirmation',
-        channel: 'telegram',
-        payload: JSON.stringify({
-          purchaseId: purchase.id,
-          amountEtb: Number(payment.amount),
-          targetUserId: purchase.target_user_id,
-        }),
-        status: 'queued',
-      });
-    }
+    await queues.enqueue('payment-webhook-processing', 'confirm', {
+      paymentId: payment.id,
+      purchaseId: payment.purchase_id,
+      chargeId: parsed.chargeId,
+      amountEtb: Number(payment.amount),
+      buyerId: null, // resolved inside the processor from the purchase row
+      targetUserId: null,
+    });
   }
-
-  await auditService.log({
-    actorType: 'system',
-    action: 'payment.completed',
-    entityType: 'payment',
-    entityId: payment.id,
-    metadata: { chargeId: parsed.chargeId, purchaseId: payment.purchase_id },
-  });
 
   return { ok: true, paymentId: payment.id };
 }

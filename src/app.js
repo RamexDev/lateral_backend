@@ -27,7 +27,12 @@ const adminStaffRouter = require('./routes/admin/staff');
 const adminUsersRouter = require('./routes/admin/users');
 const adminNotificationsRouter = require('./routes/admin/notifications');
 const adminReportsRouter = require('./routes/admin/reports');
-const paymentsWebhookRouter = require('./routes/webhooks/payments');
+const chapaWebhookRouter = require('./routes/webhooks/chapa');
+
+// Register all BullMQ processors (or their inline fallbacks in test env)
+// so the API process can enqueue jobs that get processed synchronously
+// in tests and via real BullMQ workers in production.
+require('./queues/registerAll').registerAll();
 
 function createApp() {
   const app = express();
@@ -46,8 +51,8 @@ function createApp() {
   apiV1.use(cors({ origin: config.cors.miniappOrigin }));
   apiV1.use(rejectMismatchedScope('user')); // SEC-011: reject staff tokens here
 
-  // Webhook for Telegram payments (no auth — verified via secret token header).
-  apiV1.use('/webhooks/telegram/payments', paymentsWebhookRouter);
+  // Webhook for Chapa payment confirmations (no auth — verified via HMAC signature).
+  apiV1.use('/webhooks/chapa', chapaWebhookRouter);
 
   // Onboarding wizard (called by the bot gateway or directly by the Mini App).
   apiV1.use('/', onboardingRouter);
