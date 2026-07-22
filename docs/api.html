@@ -1,0 +1,2442 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zwuwur API Documentation</title>
+  <meta name="description" content="Zwuwur lateral transfer marketplace API documentation" />
+  <script>
+    (function () {
+      var saved = localStorage.getItem('zwuwur-theme');
+      var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <style>
+    :root {
+      --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --radius: 14px;
+      --radius-sm: 10px;
+      --shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+      --topbar-height: 64px;
+    }
+
+    html[data-theme="dark"] {
+      --bg: #0b1220;
+      --bg-soft: #101a2e;
+      --panel: #121c31;
+      --panel-2: #17233c;
+      --text: #e8eef8;
+      --muted: #9fb0ca;
+      --border: #263552;
+      --accent: #4cc2ff;
+      --accent-soft: rgba(76, 194, 255, 0.12);
+      --code-bg: #0d1526;
+      --success: #37d67a;
+      --warning: #ffb84d;
+      --danger: #ff6b6b;
+      --info: #6ea8fe;
+    }
+
+    html[data-theme="light"] {
+      --bg: #f6f8fc;
+      --bg-soft: #eef3fb;
+      --panel: #ffffff;
+      --panel-2: #f9fbff;
+      --text: #172033;
+      --muted: #5b6b85;
+      --border: #d8e0ee;
+      --accent: #0976d4;
+      --accent-soft: rgba(9, 118, 212, 0.1);
+      --code-bg: #0f172a;
+      --success: #15803d;
+      --warning: #b45309;
+      --danger: #b91c1c;
+      --info: #1d4ed8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--font-sans);
+      background:
+        radial-gradient(circle at top right, rgba(76, 194, 255, 0.08), transparent 24%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      font-size: 16px;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    code,
+    pre {
+      font-family: var(--font-mono);
+    }
+
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: 10px;
+      z-index: 1000;
+      background: var(--accent);
+      color: #04121f;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-weight: 700;
+    }
+
+    .skip-link:focus {
+      left: 10px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      height: var(--topbar-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 18px;
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topbar-left,
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.15;
+      min-width: 0;
+    }
+
+    .brand strong {
+      font-size: 1rem;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      font-size: 0.8rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 9px 12px;
+      font: inherit;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+    }
+
+    .btn:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .btn:focus-visible,
+    a:focus-visible,
+    input:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .icon-btn {
+      width: 42px;
+      height: 42px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      padding: 0;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      gap: 22px;
+      align-items: start;
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: calc(var(--topbar-height) + 18px);
+      max-height: calc(100vh - var(--topbar-height) - 36px);
+      overflow: auto;
+      padding: 16px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .nav-filter {
+      width: 100%;
+      margin: 0 0 14px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-soft);
+      color: var(--text);
+      font: inherit;
+    }
+
+    .nav-group {
+      margin-bottom: 18px;
+    }
+
+    .nav-group h4 {
+      margin: 0 0 8px;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+
+    .nav-group ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .nav-group li {
+      margin: 2px 0;
+    }
+
+    .sidebar a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 0.92rem;
+    }
+
+    .sidebar a:hover {
+      background: var(--accent-soft);
+      text-decoration: none;
+    }
+
+    .sidebar a.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .content {
+      min-width: 0;
+    }
+
+    .section {
+      scroll-margin-top: calc(var(--topbar-height) + 18px);
+      margin: 0 0 28px;
+      padding: 24px;
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .section > h2,
+    .section > h1 {
+      margin-top: 0;
+      line-height: 1.2;
+    }
+
+    h1 {
+      font-size: clamp(1.7rem, 3vw, 2.5rem);
+      margin-bottom: 10px;
+    }
+
+    h2 {
+      font-size: clamp(1.3rem, 2.4vw, 1.8rem);
+      margin: 0 0 14px;
+    }
+
+    h3 {
+      font-size: 1.12rem;
+      margin: 24px 0 10px;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    .lead {
+      color: var(--muted);
+      font-size: 1.02rem;
+      max-width: 80ch;
+    }
+
+    .hero-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 16px 0 8px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+
+    .card {
+      padding: 16px;
+      border-radius: 16px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+    }
+
+    .card p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin: 14px 0;
+      background: var(--panel-2);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.94rem;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    tbody tr:hover {
+      background: color-mix(in srgb, var(--accent) 5%, transparent);
+    }
+
+    .endpoint {
+      margin: 16px 0;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel-2);
+    }
+
+    .endpoint-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .method {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 64px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .method.get {
+      color: var(--success);
+      background: color-mix(in srgb, var(--success) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--success) 32%, transparent);
+    }
+
+    .method.post {
+      color: var(--info);
+      background: color-mix(in srgb, var(--info) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--info) 32%, transparent);
+    }
+
+    .method.patch {
+      color: var(--warning);
+      background: color-mix(in srgb, var(--warning) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--warning) 34%, transparent);
+    }
+
+    .method.delete {
+      color: var(--danger);
+      background: color-mix(in srgb, var(--danger) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+    }
+
+    .path {
+      font-size: 0.95rem;
+      font-weight: 700;
+      word-break: break-all;
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+      border: 1px solid var(--border);
+      padding: 7px 10px;
+      border-radius: 10px;
+      display: inline-block;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      border: 1px solid var(--border);
+      background: var(--bg-soft);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .badge.auth {
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+      background: var(--accent-soft);
+    }
+
+    .code-wrap {
+      position: relative;
+      margin: 14px 0;
+    }
+
+    pre.code {
+      margin: 0;
+      padding: 16px;
+      border-radius: 14px;
+      background: var(--code-bg);
+      color: #dbe7ff;
+      overflow: auto;
+      font-size: 0.9rem;
+      line-height: 1.55;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    html[data-theme="light"] pre.code {
+      color: #dbe7ff;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(15, 23, 42, 0.72);
+      color: #dbe7ff;
+      border-radius: 9px;
+      padding: 6px 10px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      opacity: 0.92;
+    }
+
+    .copy-btn:hover {
+      border-color: var(--accent);
+    }
+
+    details {
+      margin: 12px 0;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--panel-2) 88%, transparent);
+      padding: 10px 12px;
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    details[open] summary {
+      margin-bottom: 10px;
+    }
+
+    .callout {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
+      background: color-mix(in srgb, var(--warning) 10%, transparent);
+    }
+
+    .callout.info {
+      border-color: color-mix(in srgb, var(--info) 32%, transparent);
+      background: color-mix(in srgb, var(--info) 10%, transparent);
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    ul.clean,
+    ol.clean {
+      margin: 12px 0;
+      padding-left: 20px;
+    }
+
+    ul.clean li,
+    ol.clean li {
+      margin: 7px 0;
+    }
+
+    .footer {
+      margin: 8px 0 30px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .nav-backdrop {
+      display: none;
+    }
+
+    @media (max-width: 1080px) {
+      .layout {
+        grid-template-columns: 260px minmax(0, 1fr);
+      }
+    }
+
+    @media (max-width: 960px) {
+      .layout {
+        grid-template-columns: 1fr;
+        padding: 14px;
+      }
+
+      .sidebar {
+        position: fixed;
+        top: var(--topbar-height);
+        bottom: 0;
+        left: 0;
+        z-index: 60;
+        width: min(84vw, 320px);
+        max-height: none;
+        border-radius: 0 18px 18px 0;
+        transform: translateX(-108%);
+        transition: transform 0.22s ease;
+      }
+
+      body.nav-open .sidebar {
+        transform: translateX(0);
+      }
+
+      body.nav-open .nav-backdrop {
+        display: block;
+        position: fixed;
+        inset: var(--topbar-height) 0 0 0;
+        background: rgba(0, 0, 0, 0.36);
+        z-index: 55;
+      }
+
+      .section {
+        padding: 18px;
+        border-radius: 18px;
+      }
+
+      .brand span {
+        display: none;
+      }
+    }
+
+    @media (min-width: 961px) {
+      #menu-toggle {
+        display: none;
+      }
+    }
+
+    @media print {
+      .topbar,
+      .sidebar,
+      .copy-btn,
+      .nav-backdrop {
+        display: none !important;
+      }
+
+      body {
+        background: #fff;
+        color: #111;
+      }
+
+      .layout {
+        display: block;
+        padding: 0;
+      }
+
+      .section {
+        box-shadow: none;
+        border: 1px solid #ddd;
+        break-inside: avoid;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      * {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="menu-toggle" class="btn icon-btn" aria-label="Toggle navigation">☰</button>
+      <div class="brand">
+        <strong>Zwuwur API</strong>
+        <span>Lateral Transfer Marketplace</span>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <span class="pill">Version 1.2</span>
+      <button id="theme-toggle" class="btn" type="button">Toggle theme</button>
+    </div>
+  </header>
+
+  <div class="nav-backdrop" id="nav-backdrop"></div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-label="API navigation">
+      <input id="nav-filter" class="nav-filter" type="search" placeholder="Filter navigation" aria-label="Filter navigation" />
+
+      <nav>
+        <div class="nav-group">
+          <h4>Getting Started</h4>
+          <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#conventions">Conventions</a></li>
+            <li><a href="#authentication">Authentication</a></li>
+            <li><a href="#errors">Errors &amp; Codes</a></li>
+            <li><a href="#data-models">Data Models</a></li>
+            <li><a href="#rate-limits">Rate Limits</a></li>
+            <li><a href="#business-rules">Business Rules</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-group">
+          <h4>User API</h4>
+          <ul>
+            <li><a href="#onboarding-api">Onboarding</a></li>
+            <li><a href="#user-auth-api">User Auth</a></li>
+            <li><a href="#profile-api">Profile</a></li>
+            <li><a href="#photo-api">Photos</a></li>
+            <li><a href="#interests-api">Interests</a></li>
+            <li><a href="#feed-api">Marketplace Feed</a></li>
+            <li><a href="#people-api">People</a></li>
+            <li><a href="#purchases-api">Purchases</a></li>
+            <li><a href="#notifications-api">Notifications</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-group">
+          <h4>Platform APIs</h4>
+          <ul>
+            <li><a href="#telegram-webhook-api">Telegram Webhook</a></li>
+            <li><a href="#payment-webhooks-api">Payment Webhooks</a></li>
+            <li><a href="#health-api">Health Checks</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-group">
+          <h4>Admin API</h4>
+          <ul>
+            <li><a href="#admin-auth-api">Admin Auth</a></li>
+            <li><a href="#admin-dashboard-api">Dashboard</a></li>
+            <li><a href="#admin-banks-api">Banks</a></li>
+            <li><a href="#admin-regions-api">Regions</a></li>
+            <li><a href="#admin-zones-api">Zones</a></li>
+            <li><a href="#admin-grades-api">Grades</a></li>
+            <li><a href="#admin-users-api">Users</a></li>
+            <li><a href="#admin-staff-api">Staff</a></li>
+            <li><a href="#admin-broadcast-api">Broadcasts</a></li>
+            <li><a href="#admin-reports-api">Reports</a></li>
+            <li><a href="#admin-system-api">System Health</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-group">
+          <h4>Reference</h4>
+          <ul>
+            <li><a href="#masking">Paywall Masking</a></li>
+            <li><a href="#webhook-design">Webhook Design</a></li>
+            <li><a href="#open-items">Open Items</a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="content" id="main">
+      <section class="section" id="overview">
+        <h1>Zwuwur API Documentation</h1>
+        <p class="lead">
+          Complete REST API reference for the Zwuwur lateral transfer marketplace.
+          This UI is aligned with the current backend implementation and SRS v1.0.
+        </p>
+
+        <div class="hero-badges">
+          <span class="pill">User Base /api/v1</span>
+          <span class="pill">Admin Base /admin/api/v1</span>
+          <span class="pill">English · Amharic</span>
+          <span class="pill">Chapa active</span>
+          <span class="pill">Telebirr stub</span>
+          <span class="pill">Telegram-only notifications</span>
+        </div>
+
+        <div class="grid">
+          <article class="card">
+            <h3>User / Mini App API</h3>
+            <code>/api/v1</code>
+            <p>Onboarding, profile, interests, marketplace feed, people, purchases, and notifications.</p>
+          </article>
+
+          <article class="card">
+            <h3>Admin PWA API</h3>
+            <code>/admin/api/v1</code>
+            <p>Reference data, user monitoring, staff, broadcasts, reports, and system health.</p>
+          </article>
+
+          <article class="card">
+            <h3>Webhooks</h3>
+            <code>/api/v1/webhooks/*</code>
+            <p>Telegram bot webhook and payment provider webhooks.</p>
+          </article>
+        </div>
+
+        <h2>Base URLs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Environment</th>
+                <th>Base URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Local</td>
+                <td><code>http://localhost:3000</code></td>
+              </tr>
+              <tr>
+                <td>Production</td>
+                <td><code>https://api.zwuwur.app</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>Core Product Rules</h2>
+        <ul class="clean">
+          <li>Matching never crosses bank boundaries.</li>
+          <li>Marketplace access requires a complete profile.</li>
+          <li>Feed matching is live, not persisted.</li>
+          <li>Paywalled fields are returned as <code>"*"</code> until purchased.</li>
+          <li>The frontend is a dumb renderer; the backend decides what is revealed.</li>
+          <li>Purchases are permanent per buyer/target pair and never charged twice.</li>
+          <li>Notifications are Telegram-only.</li>
+          <li>Marketplace responses are cached for 5 minutes.</li>
+        </ul>
+      </section>
+
+      <section class="section" id="conventions">
+        <h2>API Conventions</h2>
+
+        <h3>Content Type</h3>
+        <p>All JSON request and response bodies use <code>application/json; charset=utf-8</code> unless otherwise stated.</p>
+
+        <h3>Success Envelope</h3>
+        <pre class="code">{
+  "success": true,
+  "data": {},
+  "message": "Optional human-readable message"
+}</pre>
+
+        <h3>Error Envelope</h3>
+        <pre class="code">{
+  "success": false,
+  "error": {
+    "code": "MACHINE_READABLE_CODE",
+    "message": "Human-readable message"
+  }
+}</pre>
+
+        <h3>Pagination</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Param</th>
+                <th>Default</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>page</code></td>
+                <td>1</td>
+                <td>1-indexed page number.</td>
+              </tr>
+              <tr>
+                <td><code>page_size</code></td>
+                <td>10</td>
+                <td>Items per page. Max usually 100.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre class="code">{
+  "success": true,
+  "data": {
+    "results": [],
+    "page": 1,
+    "page_size": 10,
+    "total_results": 0
+  }
+}</pre>
+
+        <h3>Localization</h3>
+        <ul class="clean">
+          <li>Supported languages: <code>en</code>, <code>am</code>.</li>
+          <li>User routes resolve language from the authenticated user's <code>preferred_language</code>.</li>
+          <li>Reference data always has English and Amharic values.</li>
+        </ul>
+
+        <h3>Idempotency</h3>
+        <ul class="clean">
+          <li>Payment webhooks are idempotent by provider charge reference and/or <code>tx_ref</code>.</li>
+          <li>Purchase creation is protected by unique buyer/target constraint and short-lived locks.</li>
+          <li>Repeated webhook delivery must not reveal or charge twice.</li>
+        </ul>
+      </section>
+
+      <section class="section" id="authentication">
+        <h2>Authentication</h2>
+
+        <div class="grid">
+          <article class="card">
+            <h3>User API</h3>
+            <p><span class="badge auth">Bearer User JWT</span></p>
+            <p>Used by the Telegram Mini App. Token scope: <code>user</code>.</p>
+          </article>
+
+          <article class="card">
+            <h3>Admin API</h3>
+            <p><span class="badge auth">Bearer Staff JWT</span></p>
+            <p>Used by the Admin PWA. Token scope: <code>staff</code>.</p>
+          </article>
+        </div>
+
+        <h3>User Authentication</h3>
+        <p>
+          Mini App requests are authenticated by validating Telegram WebApp <code>initData</code>,
+          then issuing a user JWT.
+        </p>
+        <pre class="code">Authorization: Bearer &lt;user-jwt&gt;</pre>
+
+        <h3>Admin Authentication</h3>
+        <ul class="clean">
+          <li>Admin PWA users authenticate with email and password.</li>
+          <li>Access token: short-lived JWT.</li>
+          <li>Refresh token: opaque rotating token stored hashed.</li>
+          <li>Roles: <code>super_admin</code>, <code>admin</code>.</li>
+        </ul>
+        <pre class="code">Authorization: Bearer &lt;staff-jwt&gt;</pre>
+
+        <div class="callout info">
+          <strong>Router-token binding</strong>
+          User-scope tokens are rejected on <code>/admin/api/v1/*</code>, and staff-scope tokens are rejected on <code>/api/v1/*</code>.
+        </div>
+      </section>
+
+      <section class="section" id="errors">
+        <h2>Errors &amp; Status Codes</h2>
+
+        <h3>HTTP Status Codes</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>200</td><td>Success</td></tr>
+              <tr><td>201</td><td>Created</td></tr>
+              <tr><td>400</td><td>Validation failed</td></tr>
+              <tr><td>401</td><td>Unauthorized / invalid token / invalid credentials</td></tr>
+              <tr><td>403</td><td>Forbidden / disabled / rate limited</td></tr>
+              <tr><td>404</td><td>Not found</td></tr>
+              <tr><td>409</td><td>Conflict / already purchased / duplicate</td></tr>
+              <tr><td>422</td><td>Business rule violation</td></tr>
+              <tr><td>500</td><td>Internal server error</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Common Error Codes</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>VALIDATION_FAILED</code></td><td>Request body/query failed validation.</td></tr>
+              <tr><td><code>INVALID_TOKEN</code></td><td>Missing, expired, or malformed token.</td></tr>
+              <tr><td><code>SCOPE_FORBIDDEN</code></td><td>User token used on admin router or vice versa.</td></tr>
+              <tr><td><code>INVALID_CREDENTIALS</code></td><td>Admin email/password incorrect.</td></tr>
+              <tr><td><code>ACCOUNT_DISABLED</code></td><td>User or staff account inactive.</td></tr>
+              <tr><td><code>INSUFFICIENT_ROLE</code></td><td>Staff role not permitted.</td></tr>
+              <tr><td><code>NOT_FOUND</code></td><td>Resource does not exist.</td></tr>
+              <tr><td><code>RATE_LIMITED</code></td><td>Too many requests.</td></tr>
+              <tr><td><code>BANK_CHANGE_UNSUPPORTED</code></td><td>Bank cannot be changed after registration.</td></tr>
+              <tr><td><code>ZONE_REGION_MISMATCH</code></td><td>Zone does not belong to selected region.</td></tr>
+              <tr><td><code>PROFILE_INCOMPLETE</code></td><td>Marketplace action blocked until profile complete.</td></tr>
+              <tr><td><code>DUPLICATE_PHONE_BANK</code></td><td>Phone already registered under same bank.</td></tr>
+              <tr><td><code>ALREADY_PURCHASED</code></td><td>Buyer already purchased this candidate.</td></tr>
+              <tr><td><code>TARGET_INACTIVE</code></td><td>Target user inactive, incomplete, or invalid.</td></tr>
+              <tr><td><code>INTEREST_LIMIT_EXCEEDED</code></td><td>Too many selected regions or zones.</td></tr>
+              <tr><td><code>EMPTY_SEGMENT</code></td><td>Broadcast segment has zero recipients.</td></tr>
+              <tr><td><code>INVALID_SIGNATURE</code></td><td>Webhook signature verification failed.</td></tr>
+              <tr><td><code>BANK_HAS_ACTIVE_USERS</code></td><td>Cannot deactivate bank with active users.</td></tr>
+              <tr><td><code>ZONE_HAS_ACTIVE_USERS</code></td><td>Cannot deactivate zone with active users or interests.</td></tr>
+              <tr><td><code>GRADE_HAS_ACTIVE_USERS</code></td><td>Cannot deactivate grade referenced by active users.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="data-models">
+        <h2>Data Models</h2>
+
+        <h3>Bank</h3>
+        <pre class="code">{
+  "id": 1,
+  "name_en": "Commercial Bank of Ethiopia",
+  "name_am": "የኢትዮጵያ ንግድ ባንክ",
+  "alias_en": "CBE",
+  "alias_am": "ንግድ ባንክ",
+  "swift_code": "CBETETAA",
+  "year_established": 1963,
+  "year_established_note": "1942 / 1963",
+  "is_active": true
+}</pre>
+
+        <h3>Region</h3>
+        <pre class="code">{
+  "id": 16,
+  "name_en": "Oromia",
+  "name_am": "ኦሮሚያ",
+  "type": "region",
+  "is_active": true
+}</pre>
+
+        <h3>Zone</h3>
+        <pre class="code">{
+  "id": 25,
+  "region_id": 16,
+  "name_en": "East Shewa",
+  "name_am": "ምሥራቅ ሸዋ",
+  "note": null,
+  "is_active": true
+}</pre>
+
+        <h3>Grade</h3>
+        <pre class="code">{
+  "id": 7,
+  "grade_number": 7,
+  "band_number": 3,
+  "band_label_en": "Senior",
+  "band_label_am": "ከፍተኛ",
+  "tier_classification_en": "Grade 7",
+  "tier_classification_am": "ደረጃ 7",
+  "rank_order": 7,
+  "is_active": true
+}</pre>
+
+        <h3>User Profile</h3>
+        <pre class="code">{
+  "user_id": 42,
+  "telegram_username": "tester",
+  "phone_number": "+251911000000",
+  "bank": {
+    "id": 1,
+    "name_en": "Commercial Bank of Ethiopia",
+    "name_am": "የኢትዮጵያ ንግድ ባንክ",
+    "alias_en": "CBE",
+    "alias_am": "ንግድ ባንክ"
+  },
+  "region": {
+    "id": 16,
+    "name_en": "Oromia",
+    "name_am": "ኦሮሚያ",
+    "type": "region"
+  },
+  "zone": {
+    "id": 25,
+    "name_en": "East Shewa",
+    "name_am": "ምሥራቅ ሸዋ",
+    "note": null
+  },
+  "grade": {
+    "id": 7,
+    "grade_number": 7,
+    "band_number": 3,
+    "band_label_en": "Senior",
+    "band_label_am": "ከፍተኛ"
+  },
+  "full_name_en": "Betelhem Getachew",
+  "full_name_am": "ቤቴልሀም ግታቸው",
+  "branch_name_en": "Adama Main Branch",
+  "branch_name_am": "አዳማ ዋና ቅርንጫፍ",
+  "neighborhood_en": "Bole Road",
+  "neighborhood_am": "ቦሌ መንገድ",
+  "photo_url": "https://api.zwuwur.app/avatars/42.jpg",
+  "photo_source": "telegram",
+  "preferred_language": "en",
+  "profile_complete": true,
+  "profile_completed_at": "2026-07-10T08:12:00.000Z",
+  "last_activity_at": "2026-07-21T06:00:00.000Z"
+}</pre>
+
+        <h3>Candidate Card</h3>
+        <p>
+          This is the core marketplace contract. Paywalled fields are returned as
+          <code>"*"</code> for unpurchased candidates.
+        </p>
+        <pre class="code">{
+  "id": 4821,
+  "bank_id": 3,
+  "grade": {
+    "band": 2,
+    "number": 5
+  },
+  "region": "Oromia",
+  "region_en": "Oromia",
+  "region_am": "ኦሮሚያ",
+  "zone": "Shashamane",
+  "zone_en": "Shashamane",
+  "zone_am": "ሻሸመኔ",
+  "full_name_en": "*",
+  "full_name_am": "*",
+  "branch_name_en": "*",
+  "branch_name_am": "*",
+  "neighborhood_en": "*",
+  "neighborhood_am": "*",
+  "phone_number": "*",
+  "telegram_username": "*",
+  "photo_url": "https://cdn.zwuwur.app/avatars/4821.jpg",
+  "match_type": "zone",
+  "is_mutual": true,
+  "purchased": false
+}</pre>
+      </section>
+
+      <section class="section" id="rate-limits">
+        <h2>Rate Limits</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Area</th>
+                <th>Limit</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Feed</td>
+                <td>60 req/min per user</td>
+                <td>Prevents scraping and excessive refresh.</td>
+              </tr>
+              <tr>
+                <td>People</td>
+                <td>60 req/min per user</td>
+                <td>Same class as feed browsing.</td>
+              </tr>
+              <tr>
+                <td>Purchase initiation</td>
+                <td>10 req/min per user</td>
+                <td>Prevents payment abuse.</td>
+              </tr>
+              <tr>
+                <td>Admin login</td>
+                <td>5 failures / 15 min per IP</td>
+                <td>Lockout after repeated failures.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="business-rules">
+        <h2>Business Rules Enforced by API</h2>
+        <ul class="clean">
+          <li>Bank is fixed at registration and cannot be changed.</li>
+          <li>Profile completion requires at least one language version for full name, branch, and neighborhood, plus grade selection.</li>
+          <li>Feed and People require a complete profile.</li>
+          <li>Candidates must be in the same bank.</li>
+          <li>Candidates must be within ±1 grade band.</li>
+          <li>Feed shows candidates interested in the viewer's zone or region.</li>
+          <li>People shows candidates located in the viewer's desired areas.</li>
+          <li>Mutual matches rank first in Feed.</li>
+          <li>Zone-level matches rank above region-broad matches.</li>
+          <li>Contact reveal happens only after confirmed payment.</li>
+          <li>Purchase is permanent per buyer/target pair.</li>
+        </ul>
+      </section>
+
+      <section class="section" id="onboarding-api">
+        <h2>Onboarding API</h2>
+        <p>
+          Bot onboarding is minimal and fast. It collects only language, phone, bank, region, and zone.
+          Full profile completion happens in the Mini App.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/start</code></td><td>Begin or resume bot onboarding.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/language</code></td><td>Select language.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/contact</code></td><td>Submit phone number from Telegram contact share.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/bank</code></td><td>Select bank.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/region</code></td><td>Select region or chartered city.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/zone</code></td><td>Select zone and create incomplete user.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/otp/request</code></td><td>OTP fallback stub.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/onboarding/otp/verify</code></td><td>Verify OTP fallback code.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/onboarding/start</code>
+            <span class="badge">Public</span>
+          </div>
+          <p>Begin or resume bot onboarding.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "telegram_id": 987654321,
+  "telegram_username": "tester"
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response — new user</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "step": "select_language",
+    "languages": [
+      { "code": "en", "label": "English" },
+      { "code": "am", "label": "አማርኛ" }
+    ]
+  }
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response — already registered</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "step": "already_registered",
+    "user_id": 42,
+    "profile_complete": false,
+    "bank_name": "Commercial Bank of Ethiopia",
+    "region": "Oromia",
+    "zone": "East Shewa",
+    "mini_app_url": "https://t.me/zwuwur_bot/app?startapp=profile"
+  }
+}</pre>
+          </details>
+        </article>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/onboarding/zone</code>
+            <span class="badge">Public</span>
+          </div>
+          <p>Select zone and create incomplete user.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "telegram_id": 987654321,
+  "zone_id": 25
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "step": "profile_created_basic",
+    "user_id": 42,
+    "profile_complete": false,
+    "mini_app_url": "https://t.me/zwuwur_bot/app?startapp=profile"
+  },
+  "message": "Registration started. Please open the Mini App to complete your profile."
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="user-auth-api">
+        <h2>User Auth API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/auth/telegram</code>
+            <span class="badge">Public</span>
+          </div>
+          <p>Exchange Telegram Mini App <code>initData</code> for a user JWT.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "init_data": "query_id=...&user=...&auth_date=...&hash=..."
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOi...",
+    "user_id": 42,
+    "profile_complete": false
+  }
+}</pre>
+          </details>
+        </article>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/auth/issue-token</code>
+            <span class="badge">Internal</span>
+          </div>
+          <p>Internal bot-gateway endpoint to issue a user JWT after onboarding.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "telegram_id": 987654321
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="profile-api">
+        <h2>Profile API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/v1/me</code></td><td>User JWT</td><td>Current user profile.</td></tr>
+              <tr><td><span class="method patch">PUT</span></td><td><code>/api/v1/me</code></td><td>User JWT</td><td>Update profile. Bank cannot be changed.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/v1/me/completeness</code></td><td>User JWT</td><td>Profile completeness and nudge state.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method patch">PUT</span>
+            <code class="path">/api/v1/me</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>Update profile. Bank cannot be changed.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "full_name_en": "Betelhem Getachew",
+  "full_name_am": "ቤቴልሀም ግታቸው",
+  "branch_name_en": "Adama Main Branch",
+  "branch_name_am": "አዳማ ዋና ቅርንጫፍ",
+  "neighborhood_en": "Bole Road",
+  "neighborhood_am": "ቦሌ መንገድ",
+  "grade_id": 7,
+  "region_id": 16,
+  "zone_id": 25,
+  "preferred_language": "en"
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "updated": true,
+    "profile_complete": true
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="photo-api">
+        <h2>Photo API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/v1/me/photo</code></td><td>User JWT</td><td>Upload custom profile photo. JPEG, PNG, or WEBP. Max 5 MB.</td></tr>
+              <tr><td><span class="method delete">DELETE</span></td><td><code>/api/v1/me/photo</code></td><td>User JWT</td><td>Remove custom photo and revert to Telegram photo or placeholder.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="interests-api">
+        <h2>Transfer Interests API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/v1/interests/me</code></td><td>User JWT</td><td>List user's transfer interests.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/v1/interests/options</code></td><td>User JWT</td><td>Get selectable zones for a region with current selected state.</td></tr>
+              <tr><td><span class="method patch">PUT</span></td><td><code>/api/v1/interests/me</code></td><td>User JWT</td><td>Bulk replace interests.</td></tr>
+              <tr><td><span class="method delete">DELETE</span></td><td><code>/api/v1/interests/:id</code></td><td>User JWT</td><td>Delete one interest owned by the authenticated user.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method patch">PUT</span>
+            <code class="path">/api/v1/interests/me</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>Bulk replace interests.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "interests": [
+    { "region_id": 16, "zone_id": 25 },
+    { "region_id": 16, "zone_id": 26 },
+    { "region_id": 41, "zone_id": null }
+  ]
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "saved": true,
+    "total_active_interests": 3
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="feed-api">
+        <h2>Marketplace Feed API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <code class="path">/api/v1/marketplace/feed?page=1&amp;page_size=10&amp;fresh=false</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>Browse candidates who want the viewer's area. Requires complete profile.</p>
+
+          <details>
+            <summary>Query parameters</summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Param</th>
+                    <th>Default</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>page</code></td><td>1</td><td>Page number.</td></tr>
+                  <tr><td><code>page_size</code></td><td>10</td><td>Page size.</td></tr>
+                  <tr><td><code>fresh</code></td><td>false</td><td>Bypass 5-minute cache.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details>
+            <summary>200 response — unpurchased card</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "results": [
+      {
+        "id": 4821,
+        "bank_id": 3,
+        "grade": {
+          "band": 2,
+          "number": 5
+        },
+        "region": "Oromia",
+        "region_en": "Oromia",
+        "region_am": "ኦሮሚያ",
+        "zone": "Shashamane",
+        "zone_en": "Shashamane",
+        "zone_am": "ሻሸመኔ",
+        "full_name_en": "*",
+        "full_name_am": "*",
+        "branch_name_en": "*",
+        "branch_name_am": "*",
+        "neighborhood_en": "*",
+        "neighborhood_am": "*",
+        "phone_number": "*",
+        "telegram_username": "*",
+        "photo_url": "https://cdn.zwuwur.app/avatars/4821.jpg",
+        "match_type": "zone",
+        "is_mutual": true,
+        "purchased": false
+      }
+    ],
+    "page": 1,
+    "page_size": 10,
+    "total_results": 1
+  }
+}</pre>
+          </details>
+
+          <div class="callout info">
+            <strong>Frontend rule</strong>
+            Render exactly what the API returns. If a field is <code>"*"</code>, show <code>*</code>.
+            If it is a real value, show the real value.
+          </div>
+        </article>
+      </section>
+
+      <section class="section" id="people-api">
+        <h2>People API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <code class="path">/api/v1/marketplace/people?page=1&amp;page_size=10</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>Browse candidates located in the viewer's desired areas. Requires at least one transfer interest.</p>
+
+          <details>
+            <summary>Empty state when no interests</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "results": [],
+    "page": 1,
+    "page_size": 10,
+    "total_results": 0,
+    "requires_interests": true
+  },
+  "message": "Add transfer interests to see people in your desired areas."
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="purchases-api">
+        <h2>Purchases API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/purchases</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>Initiate a paid reveal.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "target_user_id": 4821
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "purchase_id": 100,
+    "status": "pending",
+    "amount": 500,
+    "currency": "ETB",
+    "provider": "chapa",
+    "checkout_url": "https://checkout.chapa.co/..."
+  }
+}</pre>
+          </details>
+        </article>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <code class="path">/api/v1/purchases/me</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>List purchases made by the authenticated user.</p>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "purchases": [
+      {
+        "purchase_id": 100,
+        "target_user_id": 4821,
+        "status": "completed",
+        "created_at": "2026-07-21T06:00:00.000Z",
+        "contact": {
+          "full_name_en": "Betelhem Getachew",
+          "full_name_am": "ቤቴልሀም ግታቸው",
+          "phone_number": "+251911223344",
+          "telegram_username": "@betiget",
+          "branch_name_en": "Shashamane Main Branch",
+          "branch_name_am": "ሻሸመኔ ዋና ቅርንጫፍ",
+          "neighborhood_en": "Arada Kebele 02",
+          "neighborhood_am": "አራዳ ከበሌ 02"
+        }
+      }
+    ]
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="notifications-api">
+        <h2>Notifications API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <code class="path">/api/v1/notifications/me</code>
+            <span class="badge auth">User JWT</span>
+          </div>
+          <p>List the authenticated user's notifications.</p>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "notifications": [
+      {
+        "id": 1,
+        "type": "digest",
+        "status": "sent",
+        "broadcast_id": null,
+        "payload": {
+          "summary_en": "3 new matches near your location",
+          "summary_am": "በአካባቢዎ 3 አዳዲስ ተዛማጆች"
+        },
+        "created_at": "2026-07-21T06:00:00.000Z"
+      },
+      {
+        "id": 2,
+        "type": "payment_confirmation",
+        "status": "sent",
+        "broadcast_id": null,
+        "payload": {
+          "purchase_id": 100,
+          "amount_etb": 500,
+          "target_user_id": 4821
+        },
+        "created_at": "2026-07-21T06:05:00.000Z"
+      }
+    ]
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="telegram-webhook-api">
+        <h2>Telegram Webhook API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/telegram/webhook</code>
+            <span class="badge">Webhook</span>
+          </div>
+          <p>Receives Telegram bot updates. Heavy work should be queued.</p>
+
+          <details>
+            <summary>Example update</summary>
+            <pre class="code">{
+  "update_id": 123456,
+  "message": {
+    "message_id": 1,
+    "from": {
+      "id": 987654321,
+      "username": "tester",
+      "language_code": "en"
+    },
+    "text": "/start"
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="payment-webhooks-api">
+        <h2>Payment Webhooks API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/api/v1/webhooks/chapa</code>
+            <span class="badge">HMAC Signed</span>
+          </div>
+          <p>Chapa payment confirmation webhook. This is the active payment webhook.</p>
+
+          <details>
+            <summary>Headers</summary>
+            <pre class="code">Content-Type: application/json
+Chapa-Signature: &lt;hmac-sha256-hex&gt;</pre>
+          </details>
+
+          <details>
+            <summary>Example payload</summary>
+            <pre class="code">{
+  "event": "charge.success",
+  "data": {
+    "tx_ref": "zwuwur-payment-150",
+    "amount": "500",
+    "currency": "ETB",
+    "status": "success",
+    "reference": "chapa-ref-abc123"
+  }
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "ok": true
+}</pre>
+          </details>
+        </article>
+
+        <div class="callout">
+          <strong>Telebirr</strong>
+          Telebirr is adapter-ready/stub in the current backend. The public webhook contract will be added when the provider is enabled.
+        </div>
+      </section>
+
+      <section class="section" id="health-api">
+        <h2>Health Checks</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/healthz</code></td><td>Public</td><td>Health check.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/health</code></td><td>Public</td><td>Health check.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/livez</code></td><td>Public</td><td>Liveness check.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="admin-auth-api">
+        <h2>Admin Auth API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/auth/login</code></td><td>Public</td><td>Admin login.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/auth/refresh</code></td><td>Public</td><td>Rotate refresh token.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/auth/logout</code></td><td>Public</td><td>Revoke refresh token.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/auth/me</code></td><td>Staff JWT</td><td>Current staff profile.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/admin/api/v1/auth/login</code>
+            <span class="badge">Public</span>
+          </div>
+          <p>Admin login.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "email": "superadmin@zwuwur.app",
+  "password": "ChangeMe123!"
+}</pre>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOi...",
+    "refresh_token": "v1.kp3_x9...",
+    "refresh_expires_at": "2026-07-28T12:00:00.000Z",
+    "staff": {
+      "id": 1,
+      "full_name": "Super Admin",
+      "email": "superadmin@zwuwur.app",
+      "role": "super_admin"
+    }
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="admin-dashboard-api">
+        <h2>Admin Dashboard API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <code class="path">/admin/api/v1/dashboard/summary</code>
+            <span class="badge auth">Staff JWT</span>
+          </div>
+          <p>Top-line platform metrics.</p>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "active_users": 1234,
+    "complete_users": 980,
+    "total_interests": 5678,
+    "total_purchases": 90,
+    "revenue_etb": 45000
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="admin-banks-api">
+        <h2>Admin Banks API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/banks</code></td><td>Staff JWT</td><td>List banks.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/banks</code></td><td>Staff JWT</td><td>Create bank.</td></tr>
+              <tr><td><span class="method patch">PATCH</span></td><td><code>/admin/api/v1/banks/:id</code></td><td>Staff JWT</td><td>Update or deactivate bank.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/admin/api/v1/banks</code>
+            <span class="badge auth">Staff JWT</span>
+          </div>
+          <p>Create bank.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "name_en": "Test Bank S.C.",
+  "name_am": "ቴስት ባንክ",
+  "alias_en": "testbank",
+  "alias_am": "ቴስት",
+  "swift_code": "TESTETAA",
+  "year_established": 2024,
+  "year_established_note": null
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="admin-regions-api">
+        <h2>Admin Regions API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/regions</code></td><td>Staff JWT</td><td>List regions.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/regions</code></td><td>Staff JWT</td><td>Create region.</td></tr>
+              <tr><td><span class="method patch">PATCH</span></td><td><code>/admin/api/v1/regions/:id</code></td><td>Staff JWT</td><td>Update region.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/admin/api/v1/regions</code>
+            <span class="badge auth">Staff JWT</span>
+          </div>
+          <p>Create region.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "name_en": "New Region",
+  "name_am": "አዲስ ክልል",
+  "type": "region"
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="admin-zones-api">
+        <h2>Admin Zones API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/zones?region_id=16</code></td><td>Staff JWT</td><td>List zones under a region.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/zones</code></td><td>Staff JWT</td><td>Create zone.</td></tr>
+              <tr><td><span class="method patch">PATCH</span></td><td><code>/admin/api/v1/zones/:id</code></td><td>Staff JWT</td><td>Update zone.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/admin/api/v1/zones</code>
+            <span class="badge auth">Staff JWT</span>
+          </div>
+          <p>Create zone.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "region_id": 16,
+  "name_en": "New Zone",
+  "name_am": "አዲስ ዞን",
+  "note": null
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="admin-grades-api">
+        <h2>Admin Grades API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/grades</code></td><td>Staff JWT</td><td>List grades.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/grades</code></td><td>Staff JWT</td><td>Create grade.</td></tr>
+              <tr><td><span class="method patch">PATCH</span></td><td><code>/admin/api/v1/grades/:id</code></td><td>Staff JWT</td><td>Update grade.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="admin-users-api">
+        <h2>Admin Users API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/users</code></td><td>Staff JWT</td><td>Search and monitor users. Phone is masked in list view.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/users/:id</code></td><td>Staff JWT</td><td>Get full user detail.</td></tr>
+              <tr><td><span class="method patch">PATCH</span></td><td><code>/admin/api/v1/users/:id/status</code></td><td>Staff JWT</td><td>Activate or deactivate a user.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="admin-staff-api">
+        <h2>Admin Staff API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/staff</code></td><td>Super Admin</td><td>List staff accounts.</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/admin/api/v1/staff</code></td><td>Super Admin</td><td>Create staff account.</td></tr>
+              <tr><td><span class="method patch">PATCH</span></td><td><code>/admin/api/v1/staff/:id</code></td><td>Super Admin</td><td>Update staff account.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="admin-broadcast-api">
+        <h2>Admin Broadcast API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method post">POST</span>
+            <code class="path">/admin/api/v1/notifications/broadcast</code>
+            <span class="badge auth">Staff JWT</span>
+          </div>
+          <p>Send broadcast notification to a segment.</p>
+
+          <details>
+            <summary>Example request</summary>
+            <pre class="code">{
+  "scope": "all",
+  "message_en": "Maintenance tonight",
+  "message_am": "የጥገና ስራ ዛሬ ማታ"
+}</pre>
+          </details>
+
+          <details>
+            <summary>Segment scopes</summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Scope</th>
+                    <th>Extra Fields</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>all</code></td><td>None</td><td>All active users.</td></tr>
+                  <tr><td><code>bank</code></td><td><code>bank_id</code></td><td>Active users in one bank.</td></tr>
+                  <tr><td><code>region</code></td><td><code>region_id</code></td><td>Active users in one region.</td></tr>
+                  <tr><td><code>zone</code></td><td><code>zone_id</code></td><td>Active users in one zone.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "queued_recipients": 1234
+  },
+  "message": "Broadcast queued for 1234 recipients."
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="admin-reports-api">
+        <h2>Admin Reports API</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Auth</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/reports/revenue</code></td><td>Staff JWT</td><td>Revenue report with per-bank breakdown.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/reports/users</code></td><td>Staff JWT</td><td>User growth and activity report.</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/admin/api/v1/reports/interests</code></td><td>Staff JWT</td><td>Transfer interest volume report.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="admin-system-api">
+        <h2>Admin System Health API</h2>
+
+        <article class="endpoint">
+          <div class="endpoint-head">
+            <span class="method get">GET</span>
+            <code class="path">/admin/api/v1/system/health</code>
+            <span class="badge auth">Staff JWT</span>
+          </div>
+          <p>Ops health check for MySQL, Redis, queues, and audit pipeline.</p>
+
+          <details>
+            <summary>200 response</summary>
+            <pre class="code">{
+  "success": true,
+  "data": {
+    "mysql": "ok",
+    "redis": "ok",
+    "audit_log": "ok",
+    "active_staff_sessions": 3,
+    "queued_notifications": 12
+  }
+}</pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="section" id="masking">
+        <h2>Paywall Masking Contract</h2>
+
+        <p>
+          The backend is the single source of truth for reveal state.
+          The frontend must not implement paywall logic.
+        </p>
+
+        <h3>Unpurchased Candidate</h3>
+        <pre class="code">{
+  "full_name_en": "*",
+  "full_name_am": "*",
+  "branch_name_en": "*",
+  "branch_name_am": "*",
+  "neighborhood_en": "*",
+  "neighborhood_am": "*",
+  "phone_number": "*",
+  "telegram_username": "*",
+  "purchased": false
+}</pre>
+
+        <h3>Purchased Candidate</h3>
+        <pre class="code">{
+  "full_name_en": "Betelhem Getachew",
+  "full_name_am": "ቤቴልሀም ግታቸው",
+  "branch_name_en": "Shashamane Main Branch",
+  "branch_name_am": "ሻሸመኔ ዋና ቅርንጫፍ",
+  "neighborhood_en": "Arada Kebele 02",
+  "neighborhood_am": "አራዳ ከበሌ 02",
+  "phone_number": "+251911223344",
+  "telegram_username": "@betiget",
+  "purchased": true
+}</pre>
+      </section>
+
+      <section class="section" id="webhook-design">
+        <h2>Webhook Design</h2>
+
+        <h3>Payment Webhook Requirements</h3>
+        <ul class="clean">
+          <li>Verify HMAC or provider signature using raw body.</li>
+          <li>Return 200 quickly.</li>
+          <li>Process idempotently.</li>
+          <li>Ignore duplicate success events safely.</li>
+          <li>Validate amount and currency.</li>
+          <li>Mark payment completed only once.</li>
+          <li>Send payment confirmation notification after success.</li>
+        </ul>
+
+        <h3>Recommended Payment Reference Format</h3>
+        <pre class="code">zwuwur-payment-{payment_id}</pre>
+
+        <p>
+          Using the payment ID in the provider reference allows multiple payment attempts for the same purchase
+          while preserving idempotency and preventing double revenue counting.
+        </p>
+      </section>
+
+      <section class="section" id="open-items">
+        <h2>Open Items</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Status</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Final payment provider</td>
+                <td>Chapa active</td>
+                <td>Telebirr remains adapter-ready/stub.</td>
+              </tr>
+              <tr>
+                <td>Amharic translations</td>
+                <td>Review required</td>
+                <td>Banks, regions, zones, grades, and system messages need production review.</td>
+              </tr>
+              <tr>
+                <td>Finfinne Special Zone Surrounding Oromia</td>
+                <td>Inactive by default</td>
+                <td>Likely superseded by Sheger City.</td>
+              </tr>
+              <tr>
+                <td>Enat Bank establishment year</td>
+                <td>Review required</td>
+                <td>Current seed records 2011; confirm if another milestone is preferred.</td>
+              </tr>
+              <tr>
+                <td>Amhara zone count</td>
+                <td>Review required</td>
+                <td>Current seed uses 13 entries; public sources may cite 11 depending on convention.</td>
+              </tr>
+              <tr>
+                <td>Tsehay Bank metadata</td>
+                <td>Review required</td>
+                <td>Current seed includes Tsehay Bank; confirm SWIFT/year if needed.</td>
+              </tr>
+              <tr>
+                <td>Debub Global Bank</td>
+                <td>Legacy review</td>
+                <td>Not part of current active 31-bank seed list; keep inactive if previously seeded.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="footer">
+        Zwuwur API Documentation — improved standalone HTML reference.
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var menuToggle = document.getElementById('menu-toggle');
+      var backdrop = document.getElementById('nav-backdrop');
+      var themeToggle = document.getElementById('theme-toggle');
+      var filter = document.getElementById('nav-filter');
+
+      function setTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('zwuwur-theme', theme);
+      }
+
+      if (themeToggle) {
+        themeToggle.addEventListener('click', function () {
+          var current = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+          setTheme(current);
+        });
+      }
+
+      function closeNav() {
+        document.body.classList.remove('nav-open');
+      }
+
+      if (menuToggle) {
+        menuToggle.addEventListener('click', function (event) {
+          event.stopPropagation();
+          document.body.classList.toggle('nav-open');
+        });
+      }
+
+      if (backdrop) {
+        backdrop.addEventListener('click', closeNav);
+      }
+
+      document.querySelectorAll('.sidebar a').forEach(function (link) {
+        link.addEventListener('click', function () {
+          if (window.innerWidth <= 960) {
+            closeNav();
+          }
+        });
+      });
+
+      if (filter) {
+        filter.addEventListener('input', function () {
+          var query = filter.value.toLowerCase().trim();
+
+          document.querySelectorAll('.nav-group li').forEach(function (item) {
+            var text = item.textContent.toLowerCase();
+            item.style.display = text.indexOf(query) === -1 ? 'none' : '';
+          });
+
+          document.querySelectorAll('.nav-group').forEach(function (group) {
+            var visibleLinks = group.querySelectorAll('li:not([style*="display: none"])');
+            group.style.display = visibleLinks.length === 0 ? 'none' : '';
+          });
+        });
+      }
+
+      function fallbackCopy(text, done) {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+
+        try {
+          document.execCommand('copy');
+          done();
+        } catch (error) {
+          // Ignore copy failure.
+        }
+
+        document.body.removeChild(textarea);
+      }
+
+      document.querySelectorAll('pre.code').forEach(function (pre) {
+        var wrap = document.createElement('div');
+        wrap.className = 'code-wrap';
+        pre.parentNode.insertBefore(wrap, pre);
+        wrap.appendChild(pre);
+
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'copy-btn';
+        button.textContent = 'Copy';
+
+        button.addEventListener('click', function () {
+          var text = pre.innerText;
+
+          function done() {
+            button.textContent = 'Copied';
+            setTimeout(function () {
+              button.textContent = 'Copy';
+            }, 1200);
+          }
+
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () {
+              fallbackCopy(text, done);
+            });
+          } else {
+            fallbackCopy(text, done);
+          }
+        });
+
+        wrap.appendChild(button);
+      });
+
+      var navLinks = document.querySelectorAll('.sidebar a[href^="#"]');
+      var sectionMap = [];
+
+      navLinks.forEach(function (link) {
+        var id = link.getAttribute('href').slice(1);
+        var element = document.getElementById(id);
+
+        if (element) {
+          sectionMap.push({
+            id: id,
+            link: link,
+            element: element
+          });
+        }
+      });
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) {
+              return;
+            }
+
+            navLinks.forEach(function (link) {
+              link.classList.remove('active');
+            });
+
+            var active = sectionMap.find(function (item) {
+              return item.element === entry.target;
+            });
+
+            if (active) {
+              active.link.classList.add('active');
+            }
+          });
+        }, {
+          rootMargin: '-20% 0px -70% 0px'
+        });
+
+        sectionMap.forEach(function (item) {
+          observer.observe(item.element);
+        });
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+services:
+  mysql:
+    image: mysql:8
+    container_name: zwuwur-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: zwuwur
+      MYSQL_USER: zwuwur
+      MYSQL_PASSWORD: changeme
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "zwuwur", "-pchangeme"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: zwuwur-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql_data:
+  redis_data:

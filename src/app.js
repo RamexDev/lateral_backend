@@ -1,94 +1,100 @@
-/**
- * Express app composition.
- *
- * Two independent routers (§6.0, SEC-011) with distinct CORS configs:
- *   /api/v1/*           — bot webhook + Mini App traffic
- *   /admin/api/v1/*     — Admin PWA traffic only
- *
- * Each router is fronted by router-scope enforcement that rejects mismatched tokens.
- */
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const config = require('./config');
+// Import Express.
+import express from 'express';
 
-const { rejectMismatchedScope } = require('./middlewares/routerScope');
-const { errorHandler, notFoundHandler } = require('./middlewares/errorHandler');
-const { requireStaff } = require('./middlewares/auth');
+// Import path helpers.
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const onboardingRouter = require('./routes/onboarding');
-const userRouter = require('./routes/user');
-const adminAuthRouter = require('./routes/admin/auth');
-const adminBanksRouter = require('./routes/admin/banks');
-const adminLocationsRouter = require('./routes/admin/locations');
-const adminGradesRouter = require('./routes/admin/grades');
-const adminStaffRouter = require('./routes/admin/staff');
-const adminUsersRouter = require('./routes/admin/users');
-const adminNotificationsRouter = require('./routes/admin/notifications');
-const adminReportsRouter = require('./routes/admin/reports');
-const chapaWebhookRouter = require('./routes/webhooks/chapa');
+// Import environment variables.
+import { env } from './config/env.js';
 
-// Register all BullMQ processors (or their inline fallbacks in test env)
-// so the API process can enqueue jobs that get processed synchronously
-// in tests and via real BullMQ workers in production.
-require('./queues/registerAll').registerAll();
+// Import the shared logger.
+import { logger } from './lib/logger.js';
 
-function createApp() {
-  const app = express();
+// Import error handling middleware.
+import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 
-  app.use(helmet());
-  app.use(express.json({ limit: '1mb' }));
-  if (!config.isTest) app.use(morgan('tiny'));
+// Import security middleware.
+import { requestId, securityHeaders, cors } from './middleware/security.js';
 
-  // Health check (unauthenticated) for LB probes.
-  app.get('/healthz', async (req, res) => {
-    res.status(200).json({ ok: true });
-  });
+// Import route modules.
+import adminAuthRoutes from './modules/admin/auth/adminAuth.routes.js';
+import adminReferenceRoutes from './modules/admin/reference/reference.routes.js';
+import broadcastRoutes from './modules/admin/broadcast/broadcast.routes.js';
+import managementRoutes from './modules/admin/management/management.routes.js';
+import onboardingRoutes from './modules/onboarding/onboarding.routes.js';
+import telegramWebhookRoutes from './modules/telegram/webhook.routes.js';
+import userRoutes from './modules/user/user.routes.js';
+import photoRoutes from './modules/user/photo.routes.js';
+import interestsRoutes from './modules/interests/interests.routes.js';
+import marketplaceRoutes from './modules/marketplace/marketplace.routes.js';
+import purchasesRoutes from './modules/purchases/purchases.routes.js';
+import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
+import notificationsRoutes from './modules/notifications/notifications.routes.js';
 
-  // ─── /api/v1/* — Mini App + bot webhook ─────────────────────────────────
-  const apiV1 = express.Router();
-  apiV1.use(cors({ origin: config.cors.miniappOrigin }));
-  apiV1.use(rejectMismatchedScope('user')); // SEC-011: reject staff tokens here
+// Resolve the avatars directory.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const avatarsDir = path.join(__dirname, '..', 'storage', 'avatars');
 
-  // Webhook for Chapa payment confirmations (no auth — verified via HMAC signature).
-  apiV1.use('/webhooks/chapa', chapaWebhookRouter);
+// Create the Express application.
+const app = express();
 
-  // Onboarding wizard (called by the bot gateway or directly by the Mini App).
-  apiV1.use('/', onboardingRouter);
+// Trust one proxy hop for correct client IP detection.
+app.set('trust proxy', 1);
 
-  // Authenticated user routes (/me, /interests/me, /marketplace/feed, /purchases, ...).
-  apiV1.use('/', userRouter);
+// Disable the Express powered-by header.
+app.disable('x-powered-by');
 
-  app.use('/api/v1', apiV1);
+// Security middleware.
+app.use(requestId);
+app.use(securityHeaders);
+app.use(cors);
 
-  // ─── /admin/api/v1/* — Admin PWA only ───────────────────────────────────
-  const adminApi = express.Router();
-  adminApi.use(cors({ origin: config.cors.adminPwaOrigin }));
-  adminApi.use(rejectMismatchedScope('staff')); // SEC-011: reject user tokens here
+// Parse JSON request bodies.
+app.use(express.json({ limit: '1mb' }));
 
-  // Login is unauthenticated (it returns the token).
-  adminApi.use('/auth', adminAuthRouter);
+// Parse URL-encoded request bodies.
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-  // All other admin routes require a staff JWT.
-  adminApi.use(requireStaff());
-  adminApi.use('/banks', adminBanksRouter);
-  adminApi.use('/locations', adminLocationsRouter);
-  adminApi.use('/grades', adminGradesRouter);
-  adminApi.use('/staff', adminStaffRouter);
-  adminApi.use('/users', adminUsersRouter);
-  adminApi.use('/notifications', adminNotificationsRouter);
-  adminApi.use('/dashboard', adminReportsRouter);
-  adminApi.use('/reports', adminReportsRouter);
-  adminApi.use('/system', adminReportsRouter);
+// Serve uploaded avatar files statically.
+app.use('/avatars', express.static(avatarsDir));
 
-  app.use('/admin/api/v1', adminApi);
+// Public health endpoints.
+app.get('/healthz', (req, res) => {
+  res.json({ ok: true });
+});
 
-  // 404 + error handler (last).
-  app.use(notFoundHandler);
-  app.use(errorHandler);
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
+});
 
-  return app;
-}
+app.get('/livez', (req, res) => {
+  res.json({ ok: true });
+});
 
-module.exports = { createApp };
+// Admin routes.
+app.use('/admin/api/v1/auth', adminAuthRoutes);
+app.use('/admin/api/v1/notifications/broadcast', broadcastRoutes);
+app.use('/admin/api/v1', managementRoutes);
+app.use('/admin/api/v1', adminReferenceRoutes);
+
+// User routes.
+app.use('/api/v1/onboarding', onboardingRoutes);
+app.use('/api/v1/telegram/webhook', telegramWebhookRoutes);
+app.use('/api/v1/webhooks', webhooksRoutes);
+app.use('/api/v1', userRoutes);
+app.use('/api/v1', photoRoutes);
+app.use('/api/v1/interests', interestsRoutes);
+app.use('/api/v1/marketplace', marketplaceRoutes);
+app.use('/api/v1/purchases', purchasesRoutes);
+app.use('/api/v1/webhooks', webhooksRoutes);
+app.use('/api/v1/notifications', notificationsRoutes);
+
+// Handle unknown routes.
+app.use(notFoundHandler);
+
+// Handle errors centrally.
+app.use(errorHandler);
+
+// Export the app for tests and server startup.
+export default app;
