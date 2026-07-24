@@ -1,33 +1,25 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#047857" />
+    <meta name="description" content="Zwuwur — Ethiopian bank employee lateral transfer marketplace." />
+    <title>Zwuwur</title>
 
-    <!-- viewport-fit=cover lets us use safe-area-inset for the iOS home indicator -->
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no"
-    />
-
-    <!-- Telegram WebApp SDK — also defines window.Telegram.WebApp -->
+    <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
-    <!-- Noto Sans Ethiopic for crisp Amharic script rendering across platforms -->
+    <!-- Fonts: Inter (Latin), Noto Sans Ethiopic (Amharic) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans+Ethiopic:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Ethiopic:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-
-    <title>Zwuwur</title>
   </head>
-
   <body>
-    <!-- React root -->
     <div id="root"></div>
-
-    <!-- Application entry -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

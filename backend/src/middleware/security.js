@@ -33,7 +33,7 @@ export function securityHeaders(req, res, next) {
 // CORS middleware for Mini App and Admin PWA.
 export function cors(req, res, next) {
   const allowedOrigins = [
-    process.env.MINI_APP_BASE_URL,
+    process.env.MINI_APP_URL,
     process.env.ADMIN_PWA_BASE_URL,
     'https://web.telegram.org',
     'http://localhost:5173',

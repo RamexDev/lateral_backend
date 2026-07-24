@@ -6,6 +6,10 @@ import { redis } from '../../lib/redis.js';
 import { ApiError } from '../../lib/errors.js';
 // Import card serializer.
 import { serializeCard } from './cardSerializer.js';
+// Import impressions service for viewed_at enrichment.
+import { getViewerImpressionMap } from '../impressions/impressions.service.js';
+// Import shortlist service for is_shortlisted enrichment.
+import { getShortlistSet } from '../shortlist/shortlist.service.js';
 // Import logger.
 import { logger } from '../../lib/logger.js';
 
@@ -60,21 +64,75 @@ async function getPurchasedSet(viewerId, candidateIds) {
   return new Set(rows.map((row) => row.target_user_id));
 }
 
+// Build a stable hash string for cache keying from filter options.
+function filterHash(filters) {
+  const parts = [];
+  parts.push('m=' + (filters.mutual_only ? '1' : '0'));
+  if (filters.grade_band !== undefined && filters.grade_band !== null) {
+    parts.push('gb=' + filters.grade_band);
+  }
+  if (filters.region_id) {
+    parts.push('r=' + filters.region_id);
+  }
+  if (filters.zone_id) {
+    parts.push('z=' + filters.zone_id);
+  }
+  return parts.join('|');
+}
+
 // Build the feed cache key.
-function feedCacheKey(bankId, userId, zoneId, page, pageSize) {
-  return 'feed:' + bankId + ':' + userId + ':' + zoneId + ':' + page + ':' + pageSize;
+function feedCacheKey(bankId, userId, zoneId, page, pageSize, filters) {
+  return 'feed:' + bankId + ':' + userId + ':' + zoneId + ':' + page + ':' + pageSize + ':' + filterHash(filters);
 }
 
 // Build the people cache key.
-function peopleCacheKey(userId, page, pageSize) {
-  return 'people:' + userId + ':' + page + ':' + pageSize;
+function peopleCacheKey(userId, page, pageSize, filters) {
+  return 'people:' + userId + ':' + page + ':' + pageSize + ':' + filterHash(filters);
+}
+
+// Build extra WHERE clauses from filters. Returns { sql, params }.
+function buildFilterClauses(filters, viewerBand) {
+  const clauses = [];
+  const params = [];
+
+  if (filters.mutual_only) {
+    // Only return cards where is_mutual = TRUE.
+    // The is_mutual EXISTS subquery is already in the SELECT; we re-add it as a WHERE.
+    clauses.push('EXISTS (' +
+      'SELECT 1 FROM transfer_interests vti ' +
+      'WHERE vti.user_id = ? ' +
+      'AND ((vti.zone_id = u.zone_id) OR (vti.zone_id IS NULL AND vti.region_id = u.region_id))' +
+      ')');
+    // We'll need viewerId here — caller must pass it. Use a placeholder.
+    // Actually we restructure: caller passes viewerId in filters object.
+  }
+
+  if (filters.grade_band !== undefined && filters.grade_band !== null) {
+    // Filter to a specific band ±1.
+    // Note: this overrides the default ±1 viewer band filter.
+    // We use a HAVING-style clause via ABS().
+    clauses.push('ABS(CAST(ug.band_number AS SIGNED) - ?) <= 1');
+    params.push(Number(filters.grade_band));
+  }
+
+  if (filters.region_id) {
+    clauses.push('u.region_id = ?');
+    params.push(Number(filters.region_id));
+  }
+
+  if (filters.zone_id) {
+    clauses.push('u.zone_id = ?');
+    params.push(Number(filters.zone_id));
+  }
+
+  return { sql: clauses, params };
 }
 
 // Get the marketplace feed for the authenticated viewer.
-export async function getFeed(viewerId, { page, pageSize, fresh }) {
+export async function getFeed(viewerId, { page, pageSize, fresh, filters = {} }) {
   const viewer = await getViewerContext(viewerId);
 
-  const cacheKey = feedCacheKey(viewer.bank_id, viewerId, viewer.zone_id, page, pageSize);
+  const cacheKey = feedCacheKey(viewer.bank_id, viewerId, viewer.zone_id, page, pageSize, filters);
   if (!fresh) {
     try {
       const cached = await redis.get(cacheKey);
@@ -88,7 +146,48 @@ export async function getFeed(viewerId, { page, pageSize, fresh }) {
 
   const offset = (page - 1) * pageSize;
 
-  // Feed query: candidates who have expressed interest in the viewer's zone or region.
+  // Build the base filter clauses.
+  // Default ±1 band filter is always applied; additional filters are layered on top.
+  // For mutual_only filter, we need viewerId in the filter params.
+  const extraClauses = [];
+  const extraParams = [];
+
+  if (filters.mutual_only) {
+    extraClauses.push('EXISTS (' +
+      'SELECT 1 FROM transfer_interests ti_cand ' +
+      'WHERE ti_cand.user_id = u.id ' +
+      'AND ((ti_cand.zone_id = ?) OR (ti_cand.zone_id IS NULL AND ti_cand.region_id = ?))' +
+      ')');
+    extraParams.push(viewer.zone_id);
+    extraParams.push(viewer.region_id);
+
+    extraClauses.push('EXISTS (' +
+      'SELECT 1 FROM transfer_interests vti ' +
+      'WHERE vti.user_id = ? ' +
+      'AND ((vti.zone_id = u.zone_id) OR (vti.zone_id IS NULL AND vti.region_id = u.region_id))' +
+      ')');
+    extraParams.push(viewerId);
+  }
+
+  // grade_band filter overrides the default ±1 viewer band filter.
+  const bandFilterValue = (filters.grade_band !== undefined && filters.grade_band !== null)
+    ? Number(filters.grade_band)
+    : viewer.viewer_band;
+
+  if (filters.region_id) {
+    extraClauses.push('u.region_id = ?');
+    extraParams.push(Number(filters.region_id));
+  }
+
+  if (filters.zone_id) {
+    extraClauses.push('u.zone_id = ?');
+    extraParams.push(Number(filters.zone_id));
+  }
+
+  const extraClauseSql = extraClauses.length > 0 ? ' AND ' + extraClauses.join(' AND ') : '';
+
+  // Feed query: all bank-mates ordered by relevance.
+  // Relevance order: mutual interest > they want my area > same bank only.
   // CAST(band_number AS SIGNED) prevents UNSIGNED overflow when band < viewer_band.
   const feedSql =
     'SELECT ' +
@@ -113,16 +212,24 @@ export async function getFeed(viewerId, { page, pageSize, fresh }) {
     'r.name_am AS region_name_am, ' +
     'z.name_en AS zone_name_en, ' +
     'z.name_am AS zone_name_am, ' +
-    'CASE WHEN ti.zone_id IS NOT NULL THEN \'zone\' ELSE \'region\' END AS match_type, ' +
+    // Compute band_delta for relevance scoring (NULL when viewer band is unknown).
+    'ABS(CAST(ug.band_number AS SIGNED) - ?) AS band_delta, ' +
+    // Does the candidate want to come to the viewer's area?
+    '( ' +
+    '  SELECT CASE WHEN ti.zone_id IS NOT NULL THEN \'zone\' ELSE \'region\' END ' +
+    '  FROM transfer_interests ti ' +
+    '  WHERE ti.user_id = u.id ' +
+    '    AND ((ti.zone_id = ?) OR (ti.zone_id IS NULL AND ti.region_id = ?)) ' +
+    '  ORDER BY ti.zone_id IS NOT NULL DESC ' +
+    '  LIMIT 1 ' +
+    ') AS match_type, ' +
+    // Does the viewer want the candidate's area?
     'EXISTS (' +
     '  SELECT 1 FROM transfer_interests vti ' +
     '  WHERE vti.user_id = ? ' +
     '  AND ((vti.zone_id = u.zone_id) OR (vti.zone_id IS NULL AND vti.region_id = u.region_id)) ' +
     ') AS is_mutual ' +
     'FROM users u ' +
-    'JOIN transfer_interests ti ' +
-    '  ON ti.user_id = u.id ' +
-    '  AND ((ti.zone_id = ?) OR (ti.zone_id IS NULL AND ti.region_id = ?)) ' +
     'JOIN grades ug ON ug.id = u.grade_id ' +
     'JOIN regions r ON r.id = u.region_id ' +
     'JOIN zones z ON z.id = u.zone_id ' +
@@ -130,22 +237,26 @@ export async function getFeed(viewerId, { page, pageSize, fresh }) {
     '  AND u.id != ? ' +
     '  AND u.is_active = TRUE ' +
     '  AND u.profile_completed_at IS NOT NULL ' +
-    '  AND ABS(CAST(ug.band_number AS SIGNED) - ?) <= 1 ' +
-    'ORDER BY is_mutual DESC, (ti.zone_id IS NOT NULL) DESC, ' +
+    '  AND ABS(CAST(ug.band_number AS SIGNED) - ?) <= 1' +
+    extraClauseSql + ' ' +
+    'ORDER BY is_mutual DESC, ' +
+    '  CASE WHEN match_type = \'zone\' THEN 2 WHEN match_type = \'region\' THEN 1 ELSE 0 END DESC, ' +
     '  ABS(CAST(ug.band_number AS SIGNED) - ?) ASC, ' +
-    '  ti.created_at DESC ' +
+    '  u.profile_completed_at DESC ' +
     'LIMIT ? OFFSET ?';
 
   let rows;
   try {
     [rows] = await pool.query(feedSql, [
-      viewerId,
-      viewer.zone_id,
-      viewer.region_id,
-      viewer.bank_id,
-      viewerId,
-      viewer.viewer_band,
-      viewer.viewer_band,
+      viewer.viewer_band,         // 1: band_delta in SELECT
+      viewer.zone_id,             // 2: match_type subquery ti.zone_id = ?
+      viewer.region_id,           // 3: match_type subquery ti.region_id = ?
+      viewerId,                   // 4: is_mutual EXISTS in SELECT
+      viewer.bank_id,             // 5: WHERE bank
+      viewerId,                   // 6: WHERE not self
+      bandFilterValue,            // 7: WHERE band ±1
+      ...extraParams,             // additional filter params
+      bandFilterValue,            // ORDER BY band_delta
       pageSize,
       offset
     ]);
@@ -154,32 +265,36 @@ export async function getFeed(viewerId, { page, pageSize, fresh }) {
     throw err;
   }
 
-  // Count total matching candidates.
+  // Count total candidates (all bank-mates, not just interest-matching).
   const countSql =
-    'SELECT COUNT(DISTINCT u.id) AS total ' +
+    'SELECT COUNT(*) AS total ' +
     'FROM users u ' +
-    'JOIN transfer_interests ti ' +
-    '  ON ti.user_id = u.id ' +
-    '  AND ((ti.zone_id = ?) OR (ti.zone_id IS NULL AND ti.region_id = ?)) ' +
     'JOIN grades ug ON ug.id = u.grade_id ' +
     'WHERE u.bank_id = ? ' +
     '  AND u.id != ? ' +
     '  AND u.is_active = TRUE ' +
     '  AND u.profile_completed_at IS NOT NULL ' +
-    '  AND ABS(CAST(ug.band_number AS SIGNED) - ?) <= 1';
+    '  AND ABS(CAST(ug.band_number AS SIGNED) - ?) <= 1' +
+    extraClauseSql;
 
   const [countRows] = await pool.query(countSql, [
-    viewer.zone_id,
-    viewer.region_id,
     viewer.bank_id,
     viewerId,
-    viewer.viewer_band
+    bandFilterValue,
+    ...extraParams
   ]);
   const totalResults = Number(countRows[0].total);
 
   const candidateIds = rows.map((row) => row.id);
   const purchasedSet = await getPurchasedSet(viewerId, candidateIds);
-  const results = rows.map((row) => serializeCard(row, purchasedSet));
+  const impressionMap = await getViewerImpressionMap(viewerId, candidateIds);
+  const shortlistSet = await getShortlistSet(viewerId, candidateIds);
+
+  const results = rows.map((row) => serializeCard(row, purchasedSet, {
+    impressionMap,
+    shortlistSet,
+    viewerBand: viewer.viewer_band
+  }));
 
   const data = {
     results,
@@ -198,7 +313,7 @@ export async function getFeed(viewerId, { page, pageSize, fresh }) {
 }
 
 // Get the people tab for the authenticated viewer.
-export async function getPeople(viewerId, { page, pageSize }) {
+export async function getPeople(viewerId, { page, pageSize, fresh, filters = {} }) {
   const viewer = await getViewerContext(viewerId);
 
   const [interestCountRows] = await pool.query(
@@ -217,20 +332,50 @@ export async function getPeople(viewerId, { page, pageSize }) {
     };
   }
 
-  const cacheKey = peopleCacheKey(viewerId, page, pageSize);
-  try {
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
+  if (!fresh) {
+    const cacheKey = peopleCacheKey(viewerId, page, pageSize, filters);
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch {
+      // Cache miss on Redis failure.
     }
-  } catch {
-    // Cache miss on Redis failure.
   }
 
   const offset = (page - 1) * pageSize;
 
+  // Build extra filter clauses.
+  const extraClauses = [];
+  const extraParams = [];
+
+  if (filters.mutual_only) {
+    extraClauses.push('EXISTS (' +
+      'SELECT 1 FROM transfer_interests vti2 ' +
+      'WHERE vti2.user_id = ? ' +
+      'AND ((vti2.zone_id = u.zone_id) OR (vti2.zone_id IS NULL AND vti2.region_id = u.region_id))' +
+      ')');
+    extraParams.push(viewerId);
+  }
+
+  const bandFilterValue = (filters.grade_band !== undefined && filters.grade_band !== null)
+    ? Number(filters.grade_band)
+    : viewer.viewer_band;
+
+  if (filters.region_id) {
+    extraClauses.push('u.region_id = ?');
+    extraParams.push(Number(filters.region_id));
+  }
+
+  if (filters.zone_id) {
+    extraClauses.push('u.zone_id = ?');
+    extraParams.push(Number(filters.zone_id));
+  }
+
+  const extraClauseSql = extraClauses.length > 0 ? ' AND ' + extraClauses.join(' AND ') : '';
+
   // People query: candidates located in the viewer's desired areas.
-  // CAST(band_number AS SIGNED) prevents UNSIGNED overflow.
   const peopleSql =
     'SELECT ' +
     'u.id, ' +
@@ -254,6 +399,7 @@ export async function getPeople(viewerId, { page, pageSize }) {
     'r.name_am AS region_name_am, ' +
     'z.name_en AS zone_name_en, ' +
     'z.name_am AS zone_name_am, ' +
+    'ABS(CAST(ug.band_number AS SIGNED) - ?) AS band_delta, ' +
     'EXISTS (' +
     '  SELECT 1 FROM transfer_interests vti ' +
     '  WHERE vti.user_id = ? ' +
@@ -276,18 +422,21 @@ export async function getPeople(viewerId, { page, pageSize }) {
     '    SELECT 1 FROM transfer_interests vti ' +
     '    WHERE vti.user_id = ? ' +
     '    AND ((vti.zone_id = u.zone_id) OR (vti.zone_id IS NULL AND vti.region_id = u.region_id)) ' +
-    '  ) ' +
+    '  )' +
+    extraClauseSql + ' ' +
     'ORDER BY ABS(CAST(ug.band_number AS SIGNED) - ?) ASC, u.profile_completed_at DESC ' +
     'LIMIT ? OFFSET ?';
 
   const [rows] = await pool.query(peopleSql, [
-    viewerId,
-    viewerId,
-    viewer.bank_id,
-    viewerId,
-    viewer.viewer_band,
-    viewerId,
-    viewer.viewer_band,
+    viewer.viewer_band,         // for band_delta in SELECT
+    viewerId,                   // for is_mutual EXISTS in SELECT
+    viewerId,                   // for match_type CASE in SELECT
+    viewer.bank_id,             // WHERE
+    viewerId,                   // WHERE u.id != ?
+    bandFilterValue,            // WHERE band ±1
+    viewerId,                   // WHERE EXISTS for viewer interests
+    ...extraParams,             // additional filter params
+    bandFilterValue,            // ORDER BY ABS(...)
     pageSize,
     offset
   ]);
@@ -305,19 +454,28 @@ export async function getPeople(viewerId, { page, pageSize }) {
     '    SELECT 1 FROM transfer_interests vti ' +
     '    WHERE vti.user_id = ? ' +
     '    AND ((vti.zone_id = u.zone_id) OR (vti.zone_id IS NULL AND vti.region_id = u.region_id)) ' +
-    '  )';
+    '  )' +
+    extraClauseSql;
 
   const [countRows] = await pool.query(countSql, [
     viewer.bank_id,
     viewerId,
-    viewer.viewer_band,
-    viewerId
+    bandFilterValue,
+    viewerId,
+    ...extraParams
   ]);
   const totalResults = Number(countRows[0].total);
 
   const candidateIds = rows.map((row) => row.id);
   const purchasedSet = await getPurchasedSet(viewerId, candidateIds);
-  const results = rows.map((row) => serializeCard(row, purchasedSet));
+  const impressionMap = await getViewerImpressionMap(viewerId, candidateIds);
+  const shortlistSet = await getShortlistSet(viewerId, candidateIds);
+
+  const results = rows.map((row) => serializeCard(row, purchasedSet, {
+    impressionMap,
+    shortlistSet,
+    viewerBand: viewer.viewer_band
+  }));
 
   const data = {
     results,

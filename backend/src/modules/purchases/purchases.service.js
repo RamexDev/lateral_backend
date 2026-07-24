@@ -166,15 +166,34 @@ export async function createPurchase(buyerId, targetUserId) {
   }
 }
 
-// List completed purchases for the buyer with full contact details.
-export async function listPurchases(buyerId, { page, pageSize }) {
+// List purchases for the buyer.
+// status filter (F.3): 'completed' (default, backward compat), 'pending', 'all'.
+// For pending purchases, contact details remain masked — only completed purchases reveal.
+export async function listPurchases(buyerId, { page, pageSize, status = 'completed' }) {
   const offset = (page - 1) * pageSize;
 
-  // Query completed purchases with target contact details.
+  // Build WHERE clause based on status filter.
+  let whereClause = 'WHERE p.buyer_id = ?';
+  const params = [buyerId];
+
+  if (status === 'completed') {
+    whereClause += ' AND p.status = ?';
+    params.push('completed');
+  } else if (status === 'pending') {
+    whereClause += ' AND p.status = ?';
+    params.push('pending');
+  }
+  // 'all' → no status filter.
+
+  // For pending purchases, the target user's contact details are NOT revealed.
+  // We still return the card with masked fields so the UI can render "Payment pending" cards.
+  // The JOINs to grades/regions/zones are always available (they're reference data).
   const [rows] = await pool.query(
     'SELECT ' +
     'p.id AS purchase_id, ' +
+    'p.status AS purchase_status, ' +
     'p.completed_at, ' +
+    'p.created_at AS purchase_created_at, ' +
     'u.id AS target_id, ' +
     'u.full_name_en, ' +
     'u.full_name_am, ' +
@@ -200,54 +219,104 @@ export async function listPurchases(buyerId, { page, pageSize }) {
     'JOIN grades ug ON ug.id = u.grade_id ' +
     'JOIN regions r ON r.id = u.region_id ' +
     'JOIN zones z ON z.id = u.zone_id ' +
-    'WHERE p.buyer_id = ? AND p.status = ? ' +
-    'ORDER BY p.completed_at DESC ' +
+    whereClause + ' ' +
+    'ORDER BY ' + (status === 'pending' ? 'p.created_at DESC' : 'p.completed_at DESC') + ' ' +
     'LIMIT ? OFFSET ?',
-    [buyerId, 'completed', pageSize, offset]
+    [...params, pageSize, offset]
   );
 
-  // Count total completed purchases.
+  // Count total purchases matching the filter.
   const [countRows] = await pool.query(
-    'SELECT COUNT(*) AS total FROM purchases WHERE buyer_id = ? AND status = ?',
-    [buyerId, 'completed']
+    'SELECT COUNT(*) AS total FROM purchases p ' + whereClause,
+    params
   );
   const totalResults = Number(countRows[0].total);
 
-  // Serialize results with full contact (purchased = true).
-  const results = rows.map((row) => ({
-    purchase_id: row.purchase_id,
-    completed_at: row.completed_at,
-    target: {
-      id: row.target_id,
-      full_name_en: row.full_name_en,
-      full_name_am: row.full_name_am,
-      phone_number: row.phone_number,
-      telegram_username: row.telegram_username,
-      branch_name_en: row.branch_name_en,
-      branch_name_am: row.branch_name_am,
-      neighborhood_en: row.neighborhood_en,
-      neighborhood_am: row.neighborhood_am,
-      photo_url: row.photo_url,
-      grade: {
-        band: row.band_number,
-        number: row.grade_number,
-        band_label_en: row.band_label_en,
-        band_label_am: row.band_label_am,
-        tier_classification_en: row.tier_classification_en,
-        tier_classification_am: row.tier_classification_am
-      },
-      region_en: row.region_name_en,
-      region_am: row.region_name_am,
-      zone_en: row.zone_name_en,
-      zone_am: row.zone_name_am
-    }
-  }));
+  // Serialize results. Pending purchases get masked contact fields.
+  const results = rows.map((row) => {
+    const isCompleted = row.purchase_status === 'completed';
+    const maskValue = (v) => isCompleted ? (v !== null && v !== undefined ? v : null) : '*';
+
+    return {
+      purchase_id: row.purchase_id,
+      status: row.purchase_status,
+      created_at: row.purchase_created_at,
+      completed_at: row.completed_at,
+      target: {
+        id: row.target_id,
+        full_name_en: maskValue(row.full_name_en),
+        full_name_am: maskValue(row.full_name_am),
+        phone_number: maskValue(row.phone_number),
+        telegram_username: maskValue(row.telegram_username),
+        branch_name_en: maskValue(row.branch_name_en),
+        branch_name_am: maskValue(row.branch_name_am),
+        neighborhood_en: maskValue(row.neighborhood_en),
+        neighborhood_am: maskValue(row.neighborhood_am),
+        photo_url: row.photo_url,
+        grade: {
+          band: row.band_number,
+          number: row.grade_number,
+          band_label_en: row.band_label_en,
+          band_label_am: row.band_label_am,
+          tier_classification_en: row.tier_classification_en,
+          tier_classification_am: row.tier_classification_am
+        },
+        region_en: row.region_name_en,
+        region_am: row.region_name_am,
+        zone_en: row.zone_name_en,
+        zone_am: row.zone_name_am
+      }
+    };
+  });
 
   return {
     results,
     page,
     page_size: pageSize,
     total_results: totalResults
+  };
+}
+
+// Get purchase statistics for the buyer (F.12).
+// Returns aggregate spending and activity metrics.
+export async function getPurchaseStats(buyerId) {
+  // Total spent (only completed purchases have an amount snapshot, but we use
+  // the env REVEAL_PRICE_ETB as a fallback for older purchases without amount).
+  const [completedRows] = await pool.query(
+    'SELECT COUNT(*) AS total_reveals, COALESCE(SUM(p.amount), 0) AS total_spent ' +
+    'FROM purchases p WHERE p.buyer_id = ? AND p.status = ?',
+    [buyerId, 'completed']
+  );
+
+  const totalReveals = Number(completedRows[0].total_reveals);
+  const totalSpent = Number(completedRows[0].total_spent) || (totalReveals * REVEAL_PRICE_ETB);
+
+  // Pending purchases count.
+  const [pendingRows] = await pool.query(
+    'SELECT COUNT(*) AS total_pending FROM purchases WHERE buyer_id = ? AND status = ?',
+    [buyerId, 'pending']
+  );
+  const totalPending = Number(pendingRows[0].total_pending);
+
+  // This-month reveals.
+  const [monthRows] = await pool.query(
+    'SELECT COUNT(*) AS month_reveals, COALESCE(SUM(p.amount), 0) AS month_spent ' +
+    'FROM purchases p ' +
+    'WHERE p.buyer_id = ? AND p.status = ? ' +
+    'AND p.completed_at >= DATE_FORMAT(NOW(), \'%Y-%m-01\')',
+    [buyerId, 'completed']
+  );
+  const monthReveals = Number(monthRows[0].month_reveals);
+  const monthSpent = Number(monthRows[0].month_spent) || (monthReveals * REVEAL_PRICE_ETB);
+
+  return {
+    total_reveals: totalReveals,
+    total_spent_etb: totalSpent,
+    total_pending: totalPending,
+    this_month_reveals: monthReveals,
+    this_month_spent_etb: monthSpent,
+    currency: 'ETB',
+    reveal_price_etb: REVEAL_PRICE_ETB
   };
 }
 

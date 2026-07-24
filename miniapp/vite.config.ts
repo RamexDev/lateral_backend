@@ -1,6 +1,6 @@
-// Vite configuration for the Zwuwur Mini App.
+// Vite configuration for the Zwuwur Mini App v2.
 // Tailwind v4 is wired up through its first-party Vite plugin — no separate
-// PostCSS or tailwind.config.js file is needed (CSS-first config in index.css).
+// PostCSS or tailwind.config.js file is needed (CSS-first config in styles/index.css).
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -14,11 +14,5 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true
-  },
-
-  // Surface the backend URL into the bundle.
-  // Vite only exposes env vars prefixed with VITE_.
-  define: {
-    __API_BASE_URL__: JSON.stringify(process.env.VITE_API_BASE_URL ?? 'http://localhost:3000')
   }
 });

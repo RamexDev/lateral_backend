@@ -32,6 +32,14 @@ import purchasesRoutes from './modules/purchases/purchases.routes.js';
 import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
 import notificationsRoutes from './modules/notifications/notifications.routes.js';
 import gradesRoutes from './modules/grades/grades.routes.js';
+// F.1: public reference data (regions, zones).
+import referenceRoutes from './modules/reference/reference.routes.js';
+// F.2: public runtime config.
+import configRoutes from './modules/config/config.routes.js';
+// F.6: card impressions.
+import impressionsRoutes from './modules/impressions/impressions.routes.js';
+// F.8: shortlist (save-for-later).
+import shortlistRoutes from './modules/shortlist/shortlist.routes.js';
 
 // Resolve the avatars directory.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,18 +87,22 @@ app.use('/admin/api/v1/notifications/broadcast', broadcastRoutes);
 app.use('/admin/api/v1', managementRoutes);
 app.use('/admin/api/v1', adminReferenceRoutes);
 
-// User routes.
+// User routes — most specific paths first, /api/v1 prefix mounts last.
 app.use('/api/v1/onboarding', onboardingRoutes);
 app.use('/api/v1/telegram/webhook', telegramWebhookRoutes);
 app.use('/api/v1/webhooks', webhooksRoutes);
-app.use('/api/v1', userRoutes);
-app.use('/api/v1', photoRoutes);
 app.use('/api/v1/interests', interestsRoutes);
 app.use('/api/v1/marketplace', marketplaceRoutes);
+app.use('/api/v1/marketplace', impressionsRoutes);   // F.6: card impressions
 app.use('/api/v1/purchases', purchasesRoutes);
-app.use('/api/v1/webhooks', webhooksRoutes);
 app.use('/api/v1/notifications', notificationsRoutes);
 app.use('/api/v1/grades', gradesRoutes);
+app.use('/api/v1/shortlist', shortlistRoutes);  // F.8: save-for-later
+// Public /api/v1 prefix routes (no auth) before auth-requiring prefix routers.
+app.use('/api/v1', referenceRoutes);     // F.1: public regions + zones
+app.use('/api/v1', configRoutes);        // F.2: public config
+app.use('/api/v1', userRoutes);          // per-route auth: /auth/*, /me, /me/completeness
+app.use('/api/v1', photoRoutes);         // router-level auth: /me/photo
 
 // Handle unknown routes.
 app.use(notFoundHandler);

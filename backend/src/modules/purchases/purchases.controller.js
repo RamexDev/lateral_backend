@@ -31,11 +31,23 @@ export async function listPurchases(req, res, next) {
     const query = req.validated ? req.validated.query : req.query;
     const page = Number(query.page) || 1;
     const pageSize = Number(query.page_size) || 20;
+    // status is optional — default to 'completed' for backward compatibility.
+    const status = query.status || 'completed';
 
     // Call service.
-    const data = await purchasesService.listPurchases(req.user.id, { page, pageSize });
+    const data = await purchasesService.listPurchases(req.user.id, { page, pageSize, status });
 
     // Return purchase history.
+    ok(res, data);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Handle GET /api/v1/purchases/me/stats (F.12)
+export async function getPurchaseStats(req, res, next) {
+  try {
+    const data = await purchasesService.getPurchaseStats(req.user.id);
     ok(res, data);
   } catch (err) {
     next(err);

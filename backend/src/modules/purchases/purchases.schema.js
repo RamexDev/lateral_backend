@@ -7,7 +7,9 @@ export const createPurchaseSchema = z.object({
 });
 
 // Validate purchase list query parameters.
+// F.3: adds status filter (no .default() — controller handles undefined).
 export const listPurchasesSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
-  page_size: z.coerce.number().int().positive().max(50).default(20)
+  page_size: z.coerce.number().int().positive().max(50).default(20),
+  status: z.enum(['completed', 'pending', 'all']).optional()
 });

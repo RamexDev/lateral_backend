@@ -20,7 +20,11 @@ router.use(authenticateUser);
 // POST /api/v1/purchases — initiate a paid reveal.
 router.post('/', purchaseRateLimit, validate(createPurchaseSchema, 'body'), purchasesController.createPurchase);
 
-// GET /api/v1/purchases/me — list completed purchases.
+// GET /api/v1/purchases/me/stats — aggregate purchase statistics (F.12).
+// NOTE: this must be defined BEFORE /:id routes to avoid "stats" being parsed as an ID.
+router.get('/me/stats', purchasesController.getPurchaseStats);
+
+// GET /api/v1/purchases/me — list purchases (default: completed only; F.3 adds ?status=).
 router.get('/me', validate(listPurchasesSchema, 'query'), purchasesController.listPurchases);
 
 // Export purchases router.

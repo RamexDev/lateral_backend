@@ -16,6 +16,7 @@
     "start:scheduler": "node src/scheduler.js",
     "migrate": "node src/db/migrate.js",
     "seed": "node src/seed/index.js",
+    "seed:test-users": "node src/seed/seed-test-users.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",

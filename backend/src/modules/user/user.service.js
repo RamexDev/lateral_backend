@@ -202,24 +202,27 @@ export async function getMe(userId) {
   }
 
   // Serialize profile response.
+  // F.10: grade band_label renamed to band_label_en for consistency with /grades.
+  // F.11: photo_base_url added for CDN-future-proofing.
+  // Import env at top of file is already present.
   return {
     user_id: row.id,
     telegram_username: row.telegram_username,
     phone_number: row.phone_number,
     bank: {
       id: row.bank_id,
-      name: row.bank_name_en,
+      name_en: row.bank_name_en,
       name_am: row.bank_name_am,
       nickname: row.bank_alias_en
     },
     region: {
       id: row.region_id,
-      name: row.region_name_en,
+      name_en: row.region_name_en,
       name_am: row.region_name_am
     },
     zone: {
       id: row.zone_id,
-      name: row.zone_name_en,
+      name_en: row.zone_name_en,
       name_am: row.zone_name_am
     },
     grade: row.grade_id
@@ -227,7 +230,8 @@ export async function getMe(userId) {
           id: row.grade_id,
           grade_number: row.grade_number,
           band_number: row.band_number,
-          band_label: row.band_label_en,
+          // F.10: aligned with /grades endpoint field name (band_label_en).
+          band_label_en: row.band_label_en,
           band_label_am: row.band_label_am,
           tier_classification_en: row.tier_classification_en,
           tier_classification_am: row.tier_classification_am
@@ -241,6 +245,8 @@ export async function getMe(userId) {
     neighborhood_am: row.neighborhood_am,
     photo_url: row.photo_url,
     photo_source: row.photo_source,
+    // F.11: explicit photo base URL so frontend doesn't have to guess.
+    photo_base_url: env.PUBLIC_ASSET_BASE_URL || '',
     preferred_language: row.preferred_language,
     profile_complete: isProfileCompleteRow(row),
     is_active: Boolean(row.is_active),

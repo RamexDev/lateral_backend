@@ -69,12 +69,13 @@ export async function createNotification({ userId, type, payload, sendTelegram =
 // Send a payment confirmation notification to the buyer.
 export async function sendPaymentConfirmation(buyerId, purchaseId, targetUserId, amount) {
   // Build bilingual payload.
+  const amountNum = Number(amount) || 0;
   const payload = {
     purchase_id: purchaseId,
     target_user_id: targetUserId,
-    amount_etb: Number(amount) || 0,
-    summary_en: 'Payment confirmed. Contact details unlocked for ' + (Number(amount) || 0) + ' ETB.',
-    summary_am: 'ክፍያ ተረጋግጧል። የእውቂያ ዝርዝር ለ ' + (Number(amount) || 0) + ' ብር ተከፍቷል።'
+    amount_etb: amountNum,
+    summary_en: 'Payment confirmed. Contact details unlocked for ' + amountNum + ' ETB.',
+    summary_am: 'ክፍያ ተረጋግጧል። የእውቂያ ዝርዝር ለ ' + amountNum + ' ብር ተከፍቷል።'
   };
 
   // Create notification.
@@ -113,16 +114,31 @@ export async function sendProfileNudge(userId) {
 }
 
 // List notifications for a user.
-export async function listNotifications(userId, { page, pageSize }) {
+// F.4: now supports unread_only filter and returns read_at field.
+export async function listNotifications(userId, { page, pageSize, unreadOnly = false }) {
   const offset = (page - 1) * pageSize;
 
+  let whereClause = 'WHERE user_id = ?';
+  const params = [userId];
+
+  if (unreadOnly) {
+    whereClause += ' AND read_at IS NULL';
+  }
+
   const [rows] = await pool.query(
-    'SELECT id, type, payload, sent_at, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-    [userId, pageSize, offset]
+    'SELECT id, type, payload, sent_at, read_at, created_at FROM notifications ' +
+    whereClause + ' ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    [...params, pageSize, offset]
   );
 
   const [countRows] = await pool.query(
-    'SELECT COUNT(*) AS total FROM notifications WHERE user_id = ?',
+    'SELECT COUNT(*) AS total FROM notifications ' + whereClause,
+    params
+  );
+
+  // Count unread for the bell badge.
+  const [unreadRows] = await pool.query(
+    'SELECT COUNT(*) AS unread FROM notifications WHERE user_id = ? AND read_at IS NULL',
     [userId]
   );
 
@@ -131,6 +147,7 @@ export async function listNotifications(userId, { page, pageSize }) {
     type: row.type,
     payload: row.payload ? (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload) : null,
     sent_at: row.sent_at,
+    read_at: row.read_at,
     created_at: row.created_at
   }));
 
@@ -138,8 +155,34 @@ export async function listNotifications(userId, { page, pageSize }) {
     notifications,
     page,
     page_size: pageSize,
-    total_results: Number(countRows[0].total)
+    total_results: Number(countRows[0].total),
+    unread_count: Number(unreadRows[0].unread)
   };
+}
+
+// Mark all notifications as read for a user (F.4).
+export async function markAllRead(userId) {
+  const [result] = await pool.query(
+    'UPDATE notifications SET read_at = NOW() WHERE user_id = ? AND read_at IS NULL',
+    [userId]
+  );
+  return { marked_read: result.affectedRows };
+}
+
+// Mark a single notification as read (F.4).
+export async function markRead(userId, notificationId) {
+  const [result] = await pool.query(
+    'UPDATE notifications SET read_at = NOW() WHERE id = ? AND user_id = ? AND read_at IS NULL',
+    [notificationId, userId]
+  );
+
+  if (result.affectedRows === 0) {
+    // Either notification doesn't exist, doesn't belong to user, or was already read.
+    // We treat all as idempotent success to avoid leaking existence.
+    return { marked_read: 0 };
+  }
+
+  return { marked_read: 1, notification_id: notificationId };
 }
 
 // Send a broadcast to a segment of users.

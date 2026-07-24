@@ -1,44 +1,44 @@
-// Profile completion gate.
-// Shown in place of the main app whenever profile_complete is false.
-// Feed, People, and Purchases are inaccessible until the user completes this.
+// ProfileGate — shown in place of Feed/People/Purchases when profile is incomplete.
 
-import { useAuth } from '../../auth';
-import { useLang } from '../../i18n';
-import { Card } from '../../ui';
+import { Lock } from 'lucide-react';
+import { Card } from '../../components/ui';
+import { useAuth } from '../auth/AuthProvider';
+import { useLang } from '../../lib/i18n';
+import { localizedField } from '../../lib/i18n/localize';
 import { ProfileForm } from './ProfileForm';
 
-export function ProfileGate({ onCompleted }: { onCompleted: () => Promise<unknown> }) {
+interface ProfileGateProps {
+  onCompleted: () => void;
+}
+
+export function ProfileGate({ onCompleted }: ProfileGateProps) {
   const { me } = useAuth();
-  const { t } = useLang();
+  const { t, lang } = useLang();
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-6">
-      {/* Header card explaining the gate */}
-      <Card className="mb-4 border-brand/20 bg-brand-tint">
+    <div className="mx-auto max-w-lg space-y-4 pt-4">
+      {/* Branded explainer */}
+      <Card className="border-brand/20 bg-brand-tint">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand text-white">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand text-white">
+            <Lock size={20} />
           </div>
-          <div>
-            <h1 className="text-lg font-semibold text-ink">{t('completeProfile')}</h1>
-            <p className="mt-1 text-sm text-ink-muted">{t('completeProfileSubtitle')}</p>
+          <div className="space-y-1">
+            <h2 className="text-base font-semibold text-ink">{t('profile.completeProfile')}</h2>
+            <p className="text-sm text-ink-muted">{t('profile.completeProfileSubtitle')}</p>
           </div>
         </div>
       </Card>
 
-      <Card>
-        <ProfileForm onSaved={onCompleted} />
-      </Card>
+      {/* Profile form */}
+      <ProfileForm onSaved={onCompleted} />
 
-      {/* Read-only context: bank reminder */}
-      {me?.bank ? (
-        <p className="mt-4 text-center text-xs text-ink-faint">
-          {t('bank')}: {me.bank.name || me.bank.nickname}
+      {/* Bank reminder */}
+      {me?.bank && (
+        <p className="text-center text-xs text-ink-faint">
+          {t('profile.bank')}: {localizedField(me.bank, 'name', lang)}
         </p>
-      ) : null}
+      )}
     </div>
   );
 }
